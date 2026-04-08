@@ -4,5 +4,46 @@
     "$id": "http://schema.nethserver.org/hermes-agent/configure-module-input.json",
     "description": "Configure hermes-agent",
     "examples": [],
-    "type": "object"
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+        "agents": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                    "id",
+                    "name",
+                    "role",
+                    "status"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z ]+$"
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": [
+                            "default",
+                            "developer"
+                        ]
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "start",
+                            "stop"
+                        ]
+                    }
+                }
+            }
+        }
+    }
 }

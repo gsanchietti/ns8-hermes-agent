@@ -8,10 +8,10 @@ Older docs in this repository may still describe a larger Hermes manager archite
 
 - module image built by `build-images.sh` and labeled with three dependent wrapper images under `containers/`
 - custom actions: `configure-module`, `get-configuration`, and `destroy-module`
-- `configure-module` sets a Traefik path route at `/hermes-agent` and starts the module service
-- `get-configuration` currently returns an empty JSON object
-- smarthost discovery helper plus a `smarthost-changed` reload handler
-- embedded Vue 2 and Vue CLI admin UI with `status`, `settings`, and `about` views
+- `configure-module` validates an `agents` payload, stores `AGENTS_LIST` in `agents.env`, sets the Traefik path route at `/hermes-agent`, and starts or restarts the module service
+- `get-configuration` returns the configured agents parsed from `AGENTS_LIST`
+- smarthost discovery helper plus a `smarthost-changed` reload-or-restart handler
+- embedded Vue 2 and Vue CLI admin UI with `status`, `settings`, and `about` views; `settings` now manages agents from the NS8 module UI
 - Robot Framework tests under `tests/`
 
 ## Repository layout
@@ -75,15 +75,38 @@ Output example:
 
 Let's assume that the hermes-agent instance is named `hermes-agent1`.
 
-The current input schema is empty, so the action can be invoked with `{}`:
+The current settings UI and `configure-module` action manage an array of
+agents. Each agent contains:
+
+- `id`: integer starting from `1`
+- `name`: user-defined string with allowed characters `[A-Za-z ]`
+- `role`: one of `default` or `developer`
+- `status`: one of `start` or `stop`; it is accepted in the JSON payload for
+  UI compatibility, but only `id`, `name`, and `role` are persisted today
+
+The persisted runtime value is stored in `agents.env` as:
+
+    AGENTS_LIST=1:Foo Bar:developer,2:Alice:default
 
 Example:
 
-    api-cli run module/hermes-agent1/configure-module --data '{}'
+    api-cli run module/hermes-agent1/configure-module --data '{"agents":[{"id":1,"name":"Foo Bar","role":"developer","status":"start"}]}'
 
 The above command will:
+- validate and store the agent roster in `agents.env`
 - configure the Traefik path route for `/hermes-agent`
-- start the module service
+- start or restart the module service so the updated env file is injected into the container
+
+Read the current configuration with:
+
+    api-cli run module/hermes-agent1/get-configuration --data '{}'
+
+Example output:
+
+    {"agents": [{"id": 1, "name": "Foo Bar", "role": "developer", "status": "start"}]}
+
+`status` is currently synthesized by `get-configuration` and defaults to
+`start` for every persisted agent until runtime status handling is implemented.
 
 Send a test HTTP request to the hermes-agent backend service:
 
@@ -94,8 +117,11 @@ Send a test HTTP request to the hermes-agent backend service:
 Some settings are discovered from Redis rather than passed through the
 `configure-module` input. The helper `imageroot/bin/discover-smarthost`
 writes `smarthost.env` before the module service starts, and the event handler
-`imageroot/events/smarthost-changed/10reload_services` reloads the service when
+`imageroot/events/smarthost-changed/10reload_services` reloads or restarts the service when
 cluster smarthost settings change.
+
+The agent roster uses a separate `agents.env` file because `smarthost.env` is
+fully owned by the smarthost discovery helper.
 
 This is the current scaffold behavior and can be replaced if the module grows
 beyond the template.

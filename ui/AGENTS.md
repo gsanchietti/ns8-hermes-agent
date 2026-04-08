@@ -5,3 +5,6 @@
 - Use the existing Yarn-based toolchain and build assumptions. Keep compatibility with `yarn.lock`, `vue.config.js`, and the legacy `NODE_OPTIONS=--openssl-legacy-provider` requirement used locally and in CI.
 - The current UI is a small multi-view scaffold (`status`, `settings`, `about`), not the one-page Hermes manager described in stale docs. Extend or clean up the existing scaffold directly instead of introducing a second frontend architecture.
 - When backend action names, payloads, metadata, or user-facing text change, update the corresponding view code, `public/metadata.json`, and translation files together.
+- The `settings` view is now agent-focused. Keep the table, row-action menu, modal creation flow, and `configure-module`/`get-configuration` wiring aligned when adding fields.
+- Modal save and delete are immediate `configure-module` operations; the page save button re-submits the current in-memory agent list.
+- Agent `status` is currently UI-level placeholder data: it is sent in the JSON payload, but the backend only persists `id`, `name`, and `role` and `get-configuration` returns `start` on reload.

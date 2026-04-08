@@ -9,4 +9,14 @@
 
 touch smarthost.env
 
-systemctl --user enable --now hermes-agent.service
+if [[ ! -f agents.env ]]; then
+	printf 'AGENTS_LIST=\n' > agents.env
+fi
+
+systemctl --user enable hermes-agent.service
+
+if systemctl --user is-active --quiet hermes-agent.service; then
+	systemctl --user restart hermes-agent.service
+else
+	systemctl --user start hermes-agent.service
+fi

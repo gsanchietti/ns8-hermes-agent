@@ -3,57 +3,260 @@
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
 <template>
-  <cv-grid fullWidth>
-    <cv-row>
-      <cv-column class="page-title">
-        <h2>{{ $t("settings.title") }}</h2>
-      </cv-column>
-    </cv-row>
-    <cv-row v-if="error.getConfiguration">
-      <cv-column>
+  <div>
+    <cv-grid fullWidth>
+      <cv-row>
+        <cv-column class="page-title">
+          <h2>{{ $t("settings.title") }}</h2>
+        </cv-column>
+      </cv-row>
+      <cv-row v-if="error.getConfiguration">
+        <cv-column>
+          <NsInlineNotification
+            kind="error"
+            :title="$t('action.get-configuration')"
+            :description="error.getConfiguration"
+            :showCloseButton="false"
+          />
+        </cv-column>
+      </cv-row>
+      <cv-row>
+        <cv-column>
+          <cv-tile light>
+            <cv-grid class="no-padding">
+              <cv-row class="toolbar-row">
+                <cv-column :md="6" :max="8">
+                  <h4 class="section-title">
+                    {{ $t("settings.agents_title") }}
+                  </h4>
+                  <p class="section-description">
+                    {{ $t("settings.agents_description") }}
+                  </p>
+                </cv-column>
+                <cv-column :md="2" :max="8" class="toolbar-actions">
+                  <NsButton
+                    kind="secondary"
+                    :icon="Add20"
+                    :disabled="
+                      loading.getConfiguration || loading.configureModule
+                    "
+                    @click="showCreateAgentModal"
+                  >
+                    {{ $t("settings.create_agent") }}
+                  </NsButton>
+                </cv-column>
+              </cv-row>
+              <cv-row>
+                <cv-column>
+                  <cv-skeleton-text
+                    v-if="loading.getConfiguration"
+                    :paragraph="true"
+                    :line-count="6"
+                  ></cv-skeleton-text>
+                  <NsEmptyState
+                    v-else-if="!agents.length"
+                    :title="$t('settings.no_agents')"
+                  ></NsEmptyState>
+                  <cv-structured-list v-else>
+                    <template slot="headings">
+                      <cv-structured-list-heading>
+                        {{ $t("settings.agent_name") }}
+                      </cv-structured-list-heading>
+                      <cv-structured-list-heading>
+                        {{ $t("settings.role") }}
+                      </cv-structured-list-heading>
+                      <cv-structured-list-heading>
+                        {{ $t("settings.status") }}
+                      </cv-structured-list-heading>
+                      <cv-structured-list-heading>
+                        {{ $t("settings.actions") }}
+                      </cv-structured-list-heading>
+                    </template>
+                    <template slot="items">
+                      <cv-structured-list-item
+                        v-for="agentData in agents"
+                        :key="agentData.id"
+                      >
+                        <cv-structured-list-data class="break-word">
+                          {{ agentData.name }}
+                        </cv-structured-list-data>
+                        <cv-structured-list-data>
+                          {{ roleLabel(agentData.role) }}
+                        </cv-structured-list-data>
+                        <cv-structured-list-data>
+                          <cv-tag
+                            :kind="statusKind(agentData.status)"
+                            size="sm"
+                            :label="statusLabel(agentData.status)"
+                            class="no-margin"
+                          ></cv-tag>
+                        </cv-structured-list-data>
+                        <cv-structured-list-data
+                          class="table-overflow-menu-cell"
+                        >
+                          <cv-overflow-menu
+                            flip-menu
+                            class="table-overflow-menu"
+                          >
+                            <cv-overflow-menu-item
+                              :disabled="agentData.status === 'start'"
+                              @click="setAgentStatus(agentData.id, 'start')"
+                            >
+                              <NsMenuItem
+                                :icon="Play20"
+                                :label="$t('settings.start_agent')"
+                              />
+                            </cv-overflow-menu-item>
+                            <cv-overflow-menu-item
+                              :disabled="agentData.status === 'stop'"
+                              @click="setAgentStatus(agentData.id, 'stop')"
+                            >
+                              <NsMenuItem
+                                :icon="Stop20"
+                                :label="$t('settings.stop_agent')"
+                              />
+                            </cv-overflow-menu-item>
+                            <cv-overflow-menu-item
+                              danger
+                              @click="showDeleteAgentModal(agentData)"
+                            >
+                              <NsMenuItem
+                                :icon="TrashCan20"
+                                :label="$t('settings.delete_agent')"
+                              />
+                            </cv-overflow-menu-item>
+                          </cv-overflow-menu>
+                        </cv-structured-list-data>
+                      </cv-structured-list-item>
+                    </template>
+                  </cv-structured-list>
+                </cv-column>
+              </cv-row>
+              <cv-row v-if="showPageConfigureError">
+                <cv-column>
+                  <NsInlineNotification
+                    kind="error"
+                    :title="$t('action.configure-module')"
+                    :description="error.configureModule"
+                    :showCloseButton="false"
+                  />
+                </cv-column>
+              </cv-row>
+              <cv-row class="footer-actions-row">
+                <cv-column class="footer-actions-column">
+                  <NsButton
+                    kind="primary"
+                    :icon="Save20"
+                    :loading="
+                      loading.configureModule && configureMode === 'page'
+                    "
+                    :disabled="
+                      loading.getConfiguration || loading.configureModule
+                    "
+                    @click="saveAgentsFromPage"
+                  >
+                    {{ $t("settings.save") }}
+                  </NsButton>
+                </cv-column>
+              </cv-row>
+            </cv-grid>
+          </cv-tile>
+        </cv-column>
+      </cv-row>
+    </cv-grid>
+
+    <NsModal
+      size="default"
+      :visible="isShownCreateAgentModal"
+      :primary-button-disabled="loading.configureModule"
+      :isLoading="loading.configureModule && configureMode === 'create'"
+      @modal-hidden="hideCreateAgentModal"
+      @primary-click="createAgent"
+    >
+      <template slot="title">{{ $t("settings.create_agent_title") }}</template>
+      <template slot="content">
+        <cv-form @submit.prevent="createAgent">
+          <NsTextInput
+            v-model.trim="createAgentForm.name"
+            :label="$t('settings.agent_name')"
+            :placeholder="$t('settings.agent_name_placeholder')"
+            :invalid-message="error.createAgentName"
+            :disabled="loading.configureModule"
+            data-modal-primary-focus
+            ref="createAgentName"
+          />
+          <cv-select
+            v-model="createAgentForm.role"
+            :label="$t('settings.role')"
+            :invalid-message="error.createAgentRole"
+            :disabled="loading.configureModule"
+            ref="createAgentRole"
+            class="mg-bottom-lg"
+          >
+            <cv-select-option value="default">
+              {{ $t("settings.role_default") }}
+            </cv-select-option>
+            <cv-select-option value="developer">
+              {{ $t("settings.role_developer") }}
+            </cv-select-option>
+          </cv-select>
+          <NsInlineNotification
+            v-if="showCreateAgentError"
+            kind="error"
+            :title="$t('action.configure-module')"
+            :description="error.configureModule"
+            :showCloseButton="false"
+          />
+        </cv-form>
+      </template>
+      <template slot="secondary-button">{{
+        core.$t("common.cancel")
+      }}</template>
+      <template slot="primary-button">{{
+        $t("settings.create_agent")
+      }}</template>
+    </NsModal>
+
+    <NsModal
+      size="default"
+      kind="danger"
+      :visible="isShownDeleteAgentModal"
+      :primary-button-disabled="loading.configureModule"
+      :isLoading="loading.configureModule && configureMode === 'delete'"
+      @modal-hidden="hideDeleteAgentModal"
+      @primary-click="deleteAgent"
+    >
+      <template slot="title">
+        {{
+          $t("settings.delete_agent_title", {
+            name: agentToDelete ? agentToDelete.name : "",
+          })
+        }}
+      </template>
+      <template slot="content">
+        <p>
+          {{
+            $t("settings.delete_agent_description", {
+              name: agentToDelete ? agentToDelete.name : "",
+            })
+          }}
+        </p>
         <NsInlineNotification
+          v-if="showDeleteAgentError"
           kind="error"
-          :title="$t('action.get-configuration')"
-          :description="error.getConfiguration"
+          :title="$t('action.configure-module')"
+          :description="error.configureModule"
           :showCloseButton="false"
         />
-      </cv-column>
-    </cv-row>
-    <cv-row>
-      <cv-column>
-        <cv-tile light>
-          <cv-form @submit.prevent="configureModule">
-            <!-- TODO remove test field and code configuration fields -->
-            <cv-text-input
-              :label="$t('settings.test_field')"
-              v-model="testField"
-              :placeholder="$t('settings.test_field')"
-              :disabled="loading.getConfiguration || loading.configureModule"
-              :invalid-message="error.testField"
-              ref="testField"
-            ></cv-text-input>
-            <cv-row v-if="error.configureModule">
-              <cv-column>
-                <NsInlineNotification
-                  kind="error"
-                  :title="$t('action.configure-module')"
-                  :description="error.configureModule"
-                  :showCloseButton="false"
-                />
-              </cv-column>
-            </cv-row>
-            <NsButton
-              kind="primary"
-              :icon="Save20"
-              :loading="loading.configureModule"
-              :disabled="loading.getConfiguration || loading.configureModule"
-              >{{ $t("settings.save") }}</NsButton
-            >
-          </cv-form>
-        </cv-tile>
-      </cv-column>
-    </cv-row>
-  </cv-grid>
+      </template>
+      <template slot="secondary-button">{{
+        core.$t("common.cancel")
+      }}</template>
+      <template slot="primary-button">{{
+        $t("settings.delete_agent")
+      }}</template>
+    </NsModal>
+  </div>
 </template>
 
 <script>
@@ -85,7 +288,17 @@ export default {
         page: "settings",
       },
       urlCheckInterval: null,
-      testField: "", // TODO remove
+      roles: ["default", "developer"],
+      agents: [],
+      submittedAgents: [],
+      configureMode: "",
+      isShownCreateAgentModal: false,
+      isShownDeleteAgentModal: false,
+      agentToDelete: null,
+      createAgentForm: {
+        name: "",
+        role: "default",
+      },
       loading: {
         getConfiguration: false,
         configureModule: false,
@@ -93,13 +306,22 @@ export default {
       error: {
         getConfiguration: "",
         configureModule: "",
-        testField: "", // TODO remove
-        // TODO add all validation error fields
+        createAgentName: "",
+        createAgentRole: "",
       },
     };
   },
   computed: {
     ...mapState(["instanceName", "core", "appName"]),
+    showPageConfigureError() {
+      return this.configureMode === "page" && !!this.error.configureModule;
+    },
+    showCreateAgentError() {
+      return this.configureMode === "create" && !!this.error.configureModule;
+    },
+    showDeleteAgentError() {
+      return this.configureMode === "delete" && !!this.error.configureModule;
+    },
   },
   beforeRouteEnter(to, from, next) {
     next((vm) => {
@@ -161,72 +383,64 @@ export default {
       this.loading.getConfiguration = false;
       const config = taskResult.output;
 
-      // TODO set configuration fields
-      // ...
-
-      // TODO remove
-      console.log("config", config);
-
-      // TODO focus first configuration field
-      this.focusElement("testField");
-    },
-    validateConfigureModule() {
-      this.clearErrors(this);
-      let isValidationOk = true;
-
-      // TODO remove testField and validate configuration fields
-      if (!this.testField) {
-        // test field cannot be empty
-        this.error.testField = this.$t("common.required");
-
-        if (isValidationOk) {
-          this.focusElement("testField");
-          isValidationOk = false;
-        }
-      }
-      return isValidationOk;
+      this.agents = this.normalizeAgents(config.agents || []);
     },
     configureModuleValidationFailed(validationErrors) {
       this.loading.configureModule = false;
       let focusAlreadySet = false;
 
+      if (this.configureMode === "create") {
+        this.clearCreateAgentErrors();
+      }
+
       for (const validationError of validationErrors) {
-        const field = validationError.field;
+        const field = validationError.field || validationError.parameter || "";
 
-        if (field !== "(root)") {
-          // set i18n error message
-          this.error[field] = this.$t("settings." + validationError.error);
+        if (
+          this.configureMode === "create" &&
+          field !== "(root)" &&
+          field !== ""
+        ) {
+          if (field.endsWith("name")) {
+            this.error.createAgentName = this.$t("settings.agent_name_invalid");
 
-          if (!focusAlreadySet) {
-            this.focusElement(field);
-            focusAlreadySet = true;
+            if (!focusAlreadySet) {
+              this.focusElement("createAgentName");
+              focusAlreadySet = true;
+            }
+          }
+
+          if (field.endsWith("role")) {
+            this.error.createAgentRole = this.$t("settings.agent_role_invalid");
+
+            if (!focusAlreadySet) {
+              this.focusElement("createAgentRole");
+              focusAlreadySet = true;
+            }
           }
         }
       }
-    },
-    async configureModule() {
-      const isValidationOk = this.validateConfigureModule();
-      if (!isValidationOk) {
-        return;
-      }
 
+      this.error.configureModule = this.$t("error.validation_error");
+    },
+    async saveAgents(nextAgents, mode) {
       this.loading.configureModule = true;
+      this.error.configureModule = "";
+      this.configureMode = mode;
+      this.submittedAgents = this.normalizeAgents(nextAgents);
       const taskAction = "configure-module";
       const eventId = this.getUuid();
 
-      // register to task error
       this.core.$root.$once(
         `${taskAction}-aborted-${eventId}`,
         this.configureModuleAborted
       );
 
-      // register to task validation
       this.core.$root.$once(
         `${taskAction}-validation-failed-${eventId}`,
         this.configureModuleValidationFailed
       );
 
-      // register to task completion
       this.core.$root.$once(
         `${taskAction}-completed-${eventId}`,
         this.configureModuleCompleted
@@ -236,7 +450,7 @@ export default {
         this.createModuleTaskForApp(this.instanceName, {
           action: taskAction,
           data: {
-            // TODO configuration fields
+            agents: this.submittedAgents,
           },
           extra: {
             title: this.$t("settings.configure_instance", {
@@ -253,8 +467,168 @@ export default {
         console.error(`error creating task ${taskAction}`, err);
         this.error.configureModule = this.getErrorMessage(err);
         this.loading.configureModule = false;
+      }
+    },
+    normalizeAgents(agents) {
+      return agents
+        .map((agentData) => {
+          return {
+            id: Number(agentData.id),
+            name: (agentData.name || "").trim(),
+            role: agentData.role,
+            status: agentData.status === "stop" ? "stop" : "start",
+          };
+        })
+        .filter((agentData) => {
+          return (
+            Number.isInteger(agentData.id) &&
+            agentData.id > 0 &&
+            agentData.name &&
+            this.roles.includes(agentData.role)
+          );
+        })
+        .sort((left, right) => left.id - right.id);
+    },
+    nextAgentId() {
+      return (
+        this.agents.reduce((maxId, agentData) => {
+          return Math.max(maxId, agentData.id);
+        }, 0) + 1
+      );
+    },
+    roleLabel(role) {
+      return this.$t(`settings.role_${role}`);
+    },
+    statusKind(status) {
+      return status === "stop" ? "high-contrast" : "green";
+    },
+    statusLabel(status) {
+      return this.$t(`settings.status_${status}`);
+    },
+    clearCreateAgentErrors() {
+      this.error.createAgentName = "";
+      this.error.createAgentRole = "";
+    },
+    resetCreateAgentForm() {
+      this.createAgentForm = {
+        name: "",
+        role: "default",
+      };
+      this.clearCreateAgentErrors();
+    },
+    showCreateAgentModal() {
+      this.resetCreateAgentForm();
+      this.error.configureModule = "";
+      this.configureMode = "";
+      this.isShownCreateAgentModal = true;
+
+      this.$nextTick(() => {
+        this.focusElement("createAgentName");
+      });
+    },
+    hideCreateAgentModal() {
+      if (this.loading.configureModule && this.configureMode === "create") {
         return;
       }
+
+      this.isShownCreateAgentModal = false;
+      this.resetCreateAgentForm();
+
+      if (this.configureMode === "create") {
+        this.configureMode = "";
+        this.error.configureModule = "";
+      }
+    },
+    validateCreateAgent() {
+      this.clearCreateAgentErrors();
+      this.error.configureModule = "";
+
+      let isValidationOk = true;
+      const trimmedName = this.createAgentForm.name.trim();
+
+      if (!trimmedName) {
+        this.error.createAgentName = this.$t("common.required");
+        this.focusElement("createAgentName");
+        isValidationOk = false;
+      } else if (!/^[A-Za-z ]+$/.test(trimmedName)) {
+        this.error.createAgentName = this.$t("settings.agent_name_invalid");
+        this.focusElement("createAgentName");
+        isValidationOk = false;
+      }
+
+      if (!this.roles.includes(this.createAgentForm.role)) {
+        this.error.createAgentRole = this.$t("settings.agent_role_invalid");
+
+        if (isValidationOk) {
+          this.focusElement("createAgentRole");
+          isValidationOk = false;
+        }
+      }
+
+      return isValidationOk;
+    },
+    createAgent() {
+      if (!this.validateCreateAgent()) {
+        return;
+      }
+
+      const nextAgents = [
+        ...this.agents,
+        {
+          id: this.nextAgentId(),
+          name: this.createAgentForm.name.trim(),
+          role: this.createAgentForm.role,
+          status: "start",
+        },
+      ];
+
+      this.saveAgents(nextAgents, "create");
+    },
+    showDeleteAgentModal(agentData) {
+      this.agentToDelete = agentData;
+      this.error.configureModule = "";
+      this.configureMode = "";
+      this.isShownDeleteAgentModal = true;
+    },
+    hideDeleteAgentModal() {
+      if (this.loading.configureModule && this.configureMode === "delete") {
+        return;
+      }
+
+      this.isShownDeleteAgentModal = false;
+      this.agentToDelete = null;
+
+      if (this.configureMode === "delete") {
+        this.configureMode = "";
+        this.error.configureModule = "";
+      }
+    },
+    deleteAgent() {
+      if (!this.agentToDelete) {
+        return;
+      }
+
+      const nextAgents = this.agents.filter((agentData) => {
+        return agentData.id !== this.agentToDelete.id;
+      });
+
+      this.saveAgents(nextAgents, "delete");
+    },
+    setAgentStatus(agentId, status) {
+      this.error.configureModule = "";
+      this.agents = this.agents.map((agentData) => {
+        if (agentData.id !== agentId) {
+          return agentData;
+        }
+
+        return {
+          ...agentData,
+          status,
+        };
+      });
+    },
+    saveAgentsFromPage() {
+      this.saveAgents(this.agents, "page");
     },
     configureModuleAborted(taskResult, taskContext) {
       console.error(`${taskContext.action} aborted`, taskResult);
@@ -262,10 +636,27 @@ export default {
       this.loading.configureModule = false;
     },
     configureModuleCompleted() {
-      this.loading.configureModule = false;
+      const submittedAgents = this.normalizeAgents(this.submittedAgents);
+      const mode = this.configureMode;
 
-      // reload configuration
-      this.getConfiguration();
+      this.loading.configureModule = false;
+      this.error.configureModule = "";
+
+      if (mode === "create") {
+        this.isShownCreateAgentModal = false;
+        this.resetCreateAgentForm();
+        this.getConfiguration();
+        return;
+      }
+
+      if (mode === "delete") {
+        this.isShownDeleteAgentModal = false;
+        this.agentToDelete = null;
+        this.getConfiguration();
+        return;
+      }
+
+      this.agents = submittedAgents;
     },
   },
 };
@@ -273,4 +664,47 @@ export default {
 
 <style scoped lang="scss">
 @import "../styles/carbon-utils";
+
+.toolbar-row {
+  margin-bottom: $spacing-06;
+}
+
+.toolbar-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.section-title {
+  margin-bottom: $spacing-03;
+}
+
+.section-description {
+  margin: 0;
+  color: $text-secondary;
+  max-width: 36rem;
+}
+
+.table-overflow-menu-cell {
+  width: 1%;
+}
+
+.footer-actions-row {
+  margin-top: $spacing-07;
+}
+
+.footer-actions-column {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.break-word {
+  word-break: break-word;
+}
+
+@media (max-width: 671px) {
+  .toolbar-actions {
+    justify-content: flex-start;
+    margin-top: $spacing-05;
+  }
+}
 </style>

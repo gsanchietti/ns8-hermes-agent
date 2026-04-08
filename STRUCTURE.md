@@ -20,11 +20,11 @@ Hermes manager components that are not yet present in the tree.
 
 ### `imageroot/actions/`
 
-- `configure-module/20configure`: configures the Traefik path route for `/hermes-agent`.
-- `configure-module/80start_services`: creates `smarthost.env` and enables `hermes-agent.service`.
-- `configure-module/validate-input.json`: current input schema for `configure-module`; it is empty.
-- `get-configuration/20read`: returns an empty JSON object.
-- `get-configuration/validate-output.json`: output schema for `get-configuration`.
+- `configure-module/20configure`: validates the `agents` payload, writes `AGENTS_LIST` to `agents.env`, and configures the Traefik path route for `/hermes-agent`.
+- `configure-module/80start_services`: creates missing env files and starts or restarts `hermes-agent.service`.
+- `configure-module/validate-input.json`: input schema for `configure-module`, including agent validation.
+- `get-configuration/20read`: parses `AGENTS_LIST` from `agents.env` and returns the current agents with placeholder status.
+- `get-configuration/validate-output.json`: output schema for the structured `agents` response.
 - `destroy-module/20destroy`: removes the module Traefik route.
 
 ### `imageroot/bin/`
@@ -37,7 +37,7 @@ Hermes manager components that are not yet present in the tree.
 
 ### `imageroot/systemd/user/`
 
-- `kickstart.service`: the only checked-in user unit file; its current contents start the hermes-agent Podman service.
+- `kickstart.service`: the only checked-in user unit file; its current contents start the hermes-agent Podman service with both `smarthost.env` and `agents.env`.
 
 ## `containers/`
 
@@ -63,6 +63,7 @@ The embedded admin UI currently uses Vue 2 and Vue CLI.
 - `src/router/index.js`: router with `status`, `settings`, and `about` views.
 - `src/store/index.js`: Vuex store for embedded module context.
 - `src/views/`: page scaffolds for status, settings, and about.
+- `src/views/Settings.vue`: agent-management settings view with table actions, modal creation, and `configure-module` integration.
 - `src/components/`: side menu components.
 - `src/i18n/index.js`: runtime language loading.
 - `src/styles/`: shared Carbon utility styles.
