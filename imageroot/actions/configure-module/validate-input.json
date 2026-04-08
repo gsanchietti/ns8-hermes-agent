@@ -1,0 +1,8 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "configure-module input",
+    "$id": "http://schema.nethserver.org/hermes-agent/configure-module-input.json",
+    "description": "Configure hermes-agent",
+    "examples": [],
+    "type": "object"
+}
