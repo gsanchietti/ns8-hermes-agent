@@ -20,31 +20,42 @@ Hermes manager components that are not yet present in the tree.
 
 ### `imageroot/actions/`
 
-- `configure-module/20configure`: validates the `agents` payload, writes `AGENTS_LIST` to `agents.env`, and configures the Traefik path route for `/hermes-agent`.
-- `configure-module/80start_services`: creates missing env files and starts or restarts `hermes-agent.service`.
+- `configure-module/20configure`: validates the `agents` payload and persists `AGENTS_LIST` with desired status into `environment`.
+- `configure-module/80start_services`: shell wrapper that delegates per-agent runtime reconciliation to `start-agent-services`.
 - `configure-module/validate-input.json`: input schema for `configure-module`, including agent validation.
-- `get-configuration/20read`: parses `AGENTS_LIST` from `agents.env` and returns the current agents with placeholder status.
+- `get-configuration/20read`: parses `AGENTS_LIST` from `environment` and returns the current agents with actual systemd-backed status.
 - `get-configuration/validate-output.json`: output schema for the structured `agents` response.
-- `destroy-module/20destroy`: removes the module Traefik route.
+- `destroy-module/20destroy`: stops and cleans all per-agent units, pods, named volumes, and generated runtime files.
 
 ### `imageroot/bin/`
 
-- `discover-smarthost`: reads cluster smarthost settings and writes `smarthost.env`.
+- `discover-smarthost`: reads cluster smarthost settings, merges public values into `environment`, and writes `SMTP_PASSWORD` to `secrets.env`.
+- `sync-agent-runtime`: writes `agent-<id>.env`, `agent-<id>_secrets.env`, `agent-<id>_openviking.conf`, and `systemd.env` from the stored configuration.
+- `start-agent-services`: reconciles per-agent systemd targets and pods after `configure-module`.
+- `reload-agent-services`: refreshes active agent targets after smarthost changes.
+
+### `imageroot/pypkg/`
+
+- `hermes_agent_runtime.py`: shared runtime helpers for validation, `AGENTS_LIST` parsing, runtime-file generation, per-agent volume naming and cleanup, and systemd status checks.
 
 ### `imageroot/events/`
 
-- `smarthost-changed/10reload_services`: reloads or restarts the module service when cluster smarthost settings change.
+- `smarthost-changed/10reload_services`: shell wrapper that refreshes only active per-agent targets when cluster smarthost settings change.
 
 ### `imageroot/systemd/user/`
 
-- `kickstart.service`: the only checked-in user unit file; its current contents start the hermes-agent Podman service with both `smarthost.env` and `agents.env`.
+- `hermes-agent@.target`: per-agent umbrella target.
+- `hermes-agent-pod@.service`: creates and removes the Podman pod for one agent.
+- `hermes-agent-openviking@.service`: runs the OpenViking container inside the per-agent pod with a per-agent named data volume and generated `ov.conf` bind mount.
+- `hermes-agent-hermes@.service`: runs the Hermes container inside the per-agent pod.
+- `hermes-agent-gateway@.service`: runs the Hermes gateway container inside the per-agent pod with the per-agent Hermes state volume mounted at `/opt/data`.
 
 ## `containers/`
 
 Thin component wrapper images used by the module image labels:
 
 - `containers/hermes/Containerfile`: wrapper around the upstream Hermes runtime image.
-- `containers/gateway/Containerfile`: wrapper for Hermes gateway mode.
+- `containers/gateway/Containerfile`: wrapper for Hermes gateway mode that keeps the upstream `/opt/data` bootstrap entrypoint.
 - `containers/openviking/Containerfile`: wrapper around the upstream OpenViking image.
 
 ## `ui/`
@@ -72,5 +83,5 @@ The embedded admin UI currently uses Vue 2 and Vue CLI.
 ## `tests/`
 
 - `__init__.robot`: Robot Framework initialization file.
-- `kickstart.robot`: current install, configure, HTTP, and remove test flow.
+- `kickstart.robot`: install, configure, per-agent runtime, persistent-volume, cleanup, and remove test flow.
 - `pythonreq.txt`: Python dependencies used by the test runner.

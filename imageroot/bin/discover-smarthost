@@ -5,32 +5,41 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 
-import sys
 import agent
 import os
+
+SECRETS_ENVFILE = "secrets.env"
+LEGACY_SMARTHOST_ENVFILE = "smarthost.env"
+
+
+def read_optional_envfile(path):
+    if not os.path.exists(path):
+        return {}
+
+    return agent.read_envfile(path)
+
 
 # Connect the local Redis replica. This is necessary to consistently start
 # the service if the leader node is not reachable:
 rdb = agent.redis_connect(use_replica=True)
 smtp_settings = agent.get_smarthost_settings(rdb)
 
-envfile = "smarthost.env"
+agent.mset_env(
+    {
+        "SMTP_ENABLED": "1" if smtp_settings["enabled"] else "",
+        "SMTP_HOST": smtp_settings["host"],
+        "SMTP_PORT": smtp_settings["port"],
+        "SMTP_USERNAME": smtp_settings["username"],
+        "SMTP_ENCRYPTION": smtp_settings["encrypt_smtp"],
+        "SMTP_TLSVERIFY": "1" if smtp_settings["tls_verify"] else "",
+    },
+)
+secrets_env = read_optional_envfile(SECRETS_ENVFILE)
+secrets_env["SMTP_PASSWORD"] = smtp_settings["password"]
+agent.write_envfile(SECRETS_ENVFILE, secrets_env)
 
-# Using .tmp suffix: do not overwrite the target file until the new one is
-# saved to disk:
-with open(envfile + ".tmp", "w") as efp:
-    # HINT for hermes-agent: adjust variable names as needed
-    print(f"SMTP_ENABLED={'1' if smtp_settings['enabled'] else ''}", file=efp)
-    print(f"SMTP_HOST={smtp_settings['host']}", file=efp)
-    print(f"SMTP_PORT={smtp_settings['port']}", file=efp)
-    print(f"SMTP_USERNAME={smtp_settings['username']}", file=efp)
-    print(f"SMTP_PASSWORD={smtp_settings['password']}", file=efp)
-    print(f"SMTP_ENCRYPTION={smtp_settings['encrypt_smtp']}", file=efp)
-    print(f"SMTP_TLSVERIFY={'1' if smtp_settings['tls_verify'] else ''}", file=efp)
+if os.path.exists(LEGACY_SMARTHOST_ENVFILE):
+    os.remove(LEGACY_SMARTHOST_ENVFILE)
 
-# Commit changes by replacing the existing envfile:
-os.replace(envfile + ".tmp", envfile)
-
-# NOTE: The generated envfile can be included in the service container
-#       with `podman run --env-file` or in Systemd unit with
-#       `Environment=-%S/state/smarthost.env`
+# NOTE: Public SMTP settings are merged into the shared environment file,
+#       while secrets are written to secrets.env for Podman `--env-file`.

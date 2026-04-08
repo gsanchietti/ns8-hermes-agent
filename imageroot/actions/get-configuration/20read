@@ -7,70 +7,24 @@
 
 import json
 import sys
-import agent
-import os
-import re
+import importlib.util
+from pathlib import Path
 
-AGENTS_ENVFILE = "agents.env"
-ALLOWED_ROLES = {"default", "developer"}
-NAME_PATTERN = re.compile(r"^[A-Za-z ]+$")
+runtime_path = Path(__file__).resolve().parents[2] / "pypkg" / "hermes_agent_runtime.py"
+runtime_spec = importlib.util.spec_from_file_location("hermes_agent_runtime", runtime_path)
+assert runtime_spec is not None and runtime_spec.loader is not None
+runtime_module = importlib.util.module_from_spec(runtime_spec)
+runtime_spec.loader.exec_module(runtime_module)
 
-
-def parse_agents_list(raw_agents_list):
-	if not raw_agents_list:
-		return []
-
-	agents = []
-	for raw_agent in raw_agents_list.split(","):
-		serialized_agent = raw_agent.strip()
-		if not serialized_agent:
-			continue
-
-		parts = serialized_agent.split(":", 2)
-		if len(parts) != 3:
-			raise ValueError(f"invalid AGENTS_LIST entry: {serialized_agent}")
-
-		agent_id, name, role = parts
-		normalized_name = name.strip()
-
-		if not agent_id.isdigit() or int(agent_id) < 1:
-			raise ValueError(f"invalid AGENTS_LIST id: {agent_id}")
-		if not normalized_name or not NAME_PATTERN.fullmatch(normalized_name):
-			raise ValueError(f"invalid AGENTS_LIST name: {name}")
-		if role not in ALLOWED_ROLES:
-			raise ValueError(f"invalid AGENTS_LIST role: {role}")
-
-		agents.append(
-			{
-				"id": int(agent_id),
-				"name": normalized_name,
-				"role": role,
-				"status": "start",
-			}
-		)
-
-	return sorted(agents, key=lambda item: item["id"])
-
-
-def read_agents_list():
-	if not os.path.exists(AGENTS_ENVFILE):
-		return ""
-
-	with open(AGENTS_ENVFILE, "r") as env_file:
-		for raw_line in env_file:
-			line = raw_line.strip()
-
-			if not line or line.startswith("#") or "=" not in line:
-				continue
-
-			key, value = line.split("=", 1)
-			if key == "AGENTS_LIST":
-				return value
-
-	return ""
 
 config = {
-	"agents": parse_agents_list(read_agents_list()),
+    "agents": [
+        {
+            **agent_data,
+            "status": runtime_module.actual_agent_status(agent_data["id"]),
+        }
+        for agent_data in runtime_module.read_agents_from_state()
+    ],
 }
 
 json.dump(config, fp=sys.stdout)

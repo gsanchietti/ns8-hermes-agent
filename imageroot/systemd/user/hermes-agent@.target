@@ -1,0 +1,8 @@
+[Unit]
+Description=Hermes agent stack %i
+Wants=hermes-agent-pod@%i.service hermes-agent-openviking@%i.service hermes-agent-hermes@%i.service hermes-agent-gateway@%i.service
+After=hermes-agent-pod@%i.service
+StopWhenUnneeded=yes
+
+[Install]
+WantedBy=default.target

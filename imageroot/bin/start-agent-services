@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+
+import subprocess
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pypkg"))
+
+from hermes_agent_runtime import (
+    LEGACY_AGENTS_ENVFILE,
+    LEGACY_SMARTHOST_ENVFILE,
+    SHARED_SECRETS_ENVFILE,
+    list_known_agent_ids,
+    remove_agent_volumes,
+    read_agents_from_state,
+    stop_disable_agent,
+    sync_agent_runtime_files,
+    target_unit,
+)
+
+
+def run(command, check=True):
+    subprocess.run(command, check=check)
+
+
+def cleanup_agent(agent_id):
+    stop_disable_agent(agent_id)
+    remove_agent_volumes(agent_id)
+
+
+def restart_agent(agent_id):
+    run(["systemctl", "--user", "enable", target_unit(agent_id)])
+    run(["systemctl", "--user", "stop", target_unit(agent_id)], check=False)
+    run(["systemctl", "--user", "start", target_unit(agent_id)])
+
+
+known_agent_ids = set(list_known_agent_ids())
+run(["touch", SHARED_SECRETS_ENVFILE])
+run(["rm", "-f", LEGACY_SMARTHOST_ENVFILE, LEGACY_AGENTS_ENVFILE])
+run(["systemctl", "--user", "daemon-reload"])
+run(["runagent", "discover-smarthost"])
+current_agents = read_agents_from_state()
+current_ids = {agent_data["id"] for agent_data in current_agents}
+sync_agent_runtime_files()
+
+for stale_agent_id in sorted(known_agent_ids - current_ids):
+    cleanup_agent(stale_agent_id)
+
+for agent_data in current_agents:
+    if agent_data["status"] == "start":
+        restart_agent(agent_data["id"])
+    else:
+        cleanup_agent(agent_data["id"])
+
+sys.exit(0)

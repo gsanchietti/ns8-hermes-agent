@@ -5,18 +5,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 
-# If the control reaches this step, the service can be enabled and started
+set -e
 
-touch smarthost.env
-
-if [[ ! -f agents.env ]]; then
-	printf 'AGENTS_LIST=\n' > agents.env
-fi
-
-systemctl --user enable hermes-agent.service
-
-if systemctl --user is-active --quiet hermes-agent.service; then
-	systemctl --user restart hermes-agent.service
-else
-	systemctl --user start hermes-agent.service
-fi
+exec start-agent-services

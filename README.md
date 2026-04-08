@@ -8,10 +8,14 @@ Older docs in this repository may still describe a larger Hermes manager archite
 
 - module image built by `build-images.sh` and labeled with three dependent wrapper images under `containers/`
 - custom actions: `configure-module`, `get-configuration`, and `destroy-module`
-- `configure-module` validates an `agents` payload, stores `AGENTS_LIST` in `agents.env`, sets the Traefik path route at `/hermes-agent`, and starts or restarts the module service
-- `get-configuration` returns the configured agents parsed from `AGENTS_LIST`
-- smarthost discovery helper plus a `smarthost-changed` reload-or-restart handler
+- `configure-module` validates an `agents` payload, stores `AGENTS_LIST` in `environment`, generates per-agent env files, secrets files, and OpenViking config files, and reconciles per-agent systemd targets
+- each started agent gets its own rootless Podman pod managed by systemd, with `openviking`, `hermes`, and `hermes-gateway` containers
+- each started agent also gets two internal named Podman volumes: one mounted at Hermes `/opt/data` for gateway state, and one mounted at OpenViking `/app/data` for context storage
+- those named volumes are internal to the module for now; the image does not yet declare `org.nethserver.volumes` for NS8 disk-placement integration
+- `get-configuration` returns the configured agents parsed from `AGENTS_LIST` and reports actual runtime status from systemd
+- smarthost discovery helper plus a `smarthost-changed` handler that refreshes active per-agent targets
 - embedded Vue 2 and Vue CLI admin UI with `status`, `settings`, and `about` views; `settings` now manages agents from the NS8 module UI
+- the current implementation does not publish an external HTTP route
 - Robot Framework tests under `tests/`
 
 ## Repository layout
@@ -81,21 +85,23 @@ agents. Each agent contains:
 - `id`: integer starting from `1`
 - `name`: user-defined string with allowed characters `[A-Za-z ]`
 - `role`: one of `default` or `developer`
-- `status`: one of `start` or `stop`; it is accepted in the JSON payload for
-  UI compatibility, but only `id`, `name`, and `role` are persisted today
+- `status`: one of `start` or `stop`; it is persisted and used to decide whether
+    the per-agent systemd target should be running
 
-The persisted runtime value is stored in `agents.env` as:
+The persisted runtime value is stored in `environment` as:
 
-    AGENTS_LIST=1:Foo Bar:developer,2:Alice:default
+        AGENTS_LIST=1:Foo Bar:developer:start,2:Alice User:default:stop
 
 Example:
 
     api-cli run module/hermes-agent1/configure-module --data '{"agents":[{"id":1,"name":"Foo Bar","role":"developer","status":"start"}]}'
 
 The above command will:
-- validate and store the agent roster in `agents.env`
-- configure the Traefik path route for `/hermes-agent`
-- start or restart the module service so the updated env file is injected into the container
+- validate and store the agent roster in `environment`
+- generate `agent-<id>.env`, `agent-<id>_secrets.env`, and `agent-<id>_openviking.conf` files for each agent
+- generate `systemd.env` with only the controlled image variables needed by systemd units
+- start or stop the matching `hermes-agent@<id>.target` instances based on the saved status
+- create or clean the matching per-agent named volumes as containers are started or removed
 
 Read the current configuration with:
 
@@ -105,23 +111,44 @@ Example output:
 
     {"agents": [{"id": 1, "name": "Foo Bar", "role": "developer", "status": "start"}]}
 
-`status` is currently synthesized by `get-configuration` and defaults to
-`start` for every persisted agent until runtime status handling is implemented.
+`status` is returned from the actual systemd-backed runtime state, not only from
+the desired configuration.
 
-Send a test HTTP request to the hermes-agent backend service:
+Started agents enable a templated user target named `hermes-agent@<id>.target`.
+That target brings up a Podman pod plus three container services:
 
-    curl http://127.0.0.1/hermes-agent/
+- `hermes-agent-pod@<id>.service`
+- `hermes-agent-openviking@<id>.service`
+- `hermes-agent-hermes@<id>.service`
+- `hermes-agent-gateway@<id>.service`
+
+The persistent storage contract is currently:
+
+- `hermes-agent-gateway@<id>.service` mounts `hermes-agent-hermes-data-<id>` at `/opt/data`
+- `hermes-agent-openviking@<id>.service` mounts `hermes-agent-openviking-data-<id>` at `/app/data`
+- `hermes-agent-openviking@<id>.service` also bind-mounts the generated `agent-<id>_openviking.conf` to `/app/ov.conf`
+- the idle `hermes-agent-hermes@<id>.service` container remains ephemeral in the current scaffold
+
+The gateway wrapper now keeps the upstream Hermes Docker entrypoint, so first
+start still bootstraps `/opt/data` with default `.env`, `config.yaml`,
+`SOUL.md`, and bundled skills.
 
 ## Smarthost setting discovery
 
 Some settings are discovered from Redis rather than passed through the
 `configure-module` input. The helper `imageroot/bin/discover-smarthost`
-writes `smarthost.env` before the module service starts, and the event handler
-`imageroot/events/smarthost-changed/10reload_services` reloads or restarts the service when
-cluster smarthost settings change.
+writes public SMTP settings into `environment` and `SMTP_PASSWORD` into
+`secrets.env`. The helper `imageroot/bin/sync-agent-runtime` then copies only
+the agent-specific runtime data into `agent-<id>.env`,
+`agent-<id>_secrets.env`, and `agent-<id>_openviking.conf` so each pod consumes
+only its own runtime files. The event handler
+`imageroot/events/smarthost-changed/10reload_services` refreshes active agent
+targets when cluster smarthost settings change.
 
-The agent roster uses a separate `agents.env` file because `smarthost.env` is
-fully owned by the smarthost discovery helper.
+`environment` is shared with NS8 core, so module writers must merge their
+managed keys instead of overwriting the file. `secrets.env` is reserved for
+sensitive values that should not live in the shared environment file, and
+`systemd.env` is generated as a controlled subset for the systemd units.
 
 This is the current scaffold behavior and can be replaced if the module grows
 beyond the template.
@@ -139,7 +166,11 @@ Run the module test with:
 
     ./test-module.sh <NODE_ADDR> ghcr.io/nethserver/hermes-agent:latest
 
-The checked-in test suite is written with [Robot Framework](https://robotframework.org/).
+The checked-in test suite is written with [Robot Framework](https://robotframework.org/) and
+currently validates per-agent runtime file generation, actual runtime status
+from `get-configuration`, per-agent target plus container service state, Podman
+pod presence, named volume creation, persistence across target restart,
+reconfiguration cleanup, and module removal.
 
 ## UI translation
 
