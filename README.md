@@ -1,8 +1,17 @@
 # ns8-hermes-agent
 
-`ns8-hermes-agent` is currently a renamed NethServer 8 module scaffold with Hermes-specific image names and wrapper containers. The checked-in code provides a small rootless module service, an embedded admin UI scaffold, smarthost discovery plumbing, and build and test assets.
+`ns8-hermes-agent` is an NS8 module that packages two services into one manageable deployment:
 
-Older docs in this repository may still describe a larger Hermes manager architecture. Use the checked-in tree as the source of truth.
+- [Hermes-Agent](https://github.com/NousResearch/hermes-agent), which provides the per-agent runtime and gateway used by each configured assistant
+- [OpenViking](https://github.com/volcengine/OpenViking), which provides the shared multi-tenant backend those agents use for retrieval, indexing, and tenant-scoped workspace data
+
+In practical terms, this project exists so an NS8 administrator can define and run multiple Hermes agents from a single module, while reusing one shared OpenViking service behind the scenes instead of standing up a separate backend stack for every agent.
+
+The module handles the NS8-specific work needed to make that usable in production: it stores the agent roster in module configuration, provisions tenant data inside OpenViking, generates per-agent runtime files and secrets, manages rootless Podman containers through systemd user units, discovers cluster smarthost settings, and exposes an embedded admin UI for day-to-day configuration.
+
+This repository is therefore not a generic Hermes application or an upstream OpenViking deployment. It is the integration layer that ties them together for NethServer 8, with the current checked-in tree as the source of truth.
+
+Older docs in this repository may still describe a larger Hermes manager architecture. When in doubt, follow the current implementation described below.
 
 ## Current code state
 
