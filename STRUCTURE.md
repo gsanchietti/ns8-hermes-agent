@@ -1,29 +1,19 @@
 # Structure
 
-This document maps the current checked-in layout. It does not describe planned
-Hermes manager components that are not yet present in the tree.
+This document maps the current Hermes-only layout.
 
 ## Root files
 
 - `AGENTS.md`: repo-wide instructions.
-- `NS8_RESOURCE_MAP.md`: NS8-specific documentation index for actions, UI, build flow, and module patterns.
-- `HERMES_RESOURCE_MAP.md`: Hermes-specific documentation index for container behavior, runtime setup, and agent integration.
-- `OPENVIKING_RESOURCE_MAP.md`: OpenViking documentation index for tenant, server, and deployment behavior.
-- `README.md`: current project status and usage notes.
+- `README.md`: operator-facing overview and usage notes.
 - `STRUCTURE.md`: this file.
-- `build-images.sh`: builds the module image and the two wrapper images, requests one NS8-managed TCP port for the module image, and declares Traefik route administration authorization for node-local route discovery.
-- `test-module.sh`: runs the Robot Framework module test.
+- `PLAN.md`: requested pruning plan.
+- `NS8-MODULE.md`: implementation-oriented NS8 lifecycle notes.
+- `NS8_RESOURCE_MAP.md`: NS8 reference index.
+- `HERMES_RESOURCE_MAP.md`: Hermes reference index.
+- `build-images.sh`: builds the module image and Hermes wrapper image.
+- `test-module.sh`: runs the module test suite.
 - `renovate.json`: Renovate configuration.
-
-## `.github/`
-
-- `agents/researcher.agent.md`: custom agent that searches `*_RESOURCE_MAP.md` files, browses documentation, and gathers prior art before implementation.
-- `agents/security-expert.agent.md`: custom agent that reviews changes for security risks and applies or reports minimal mitigations.
-- `agents/tester.agent.md`: custom agent that adds or updates unit and Robot Framework integration tests and runs the relevant test commands.
-- `agents/docs-maintainer.agent.md`: custom agent that keeps checked-in Markdown docs aligned with the implementation.
-- `agents/code-reviewer.agent.md`: custom agent that reviews diffs for minimality, readability, and maintainability.
-- `agents/committer.agent.md`: custom agent that reviews git changes and creates Conventional Commits.
-- `workflows/`: GitHub Actions workflows for image publishing, API-doc build and cleanup, registry cleanup, module and infrastructure tests, and UI build checks.
 
 ## `imageroot/`
 
@@ -33,69 +23,53 @@ Hermes manager components that are not yet present in the tree.
 
 ### `imageroot/actions/`
 
-- `create-module/20create`: validates the NS8-provided `TCP_PORT`, persists it to `OPENVIKING_PORT`, and records the effective `TIMEZONE` in `environment` for the shared runtime services.
-- `configure-module/20configure`: validates the user-facing `agents` payload plus shared `openviking` settings, persists `AGENTS_LIST`, and stores the shared embedding provider and secret.
-- `configure-module/80start_services`: shell wrapper that delegates per-agent runtime reconciliation to `start-agent-services`.
-- `configure-module/validate-input.json`: input schema for `configure-module`, including agent validation and the per-agent `use_default_gateway_for_llm` flag.
-- `get-configuration/20read`: parses `AGENTS_LIST` from `environment`, synthesizes the hidden reserved system agent, and returns the current agents plus shared OpenViking embedding state.
-- `get-configuration/validate-output.json`: output schema for the structured `agents` and shared `openviking` response, including the per-agent shared-gateway flag.
-- `destroy-module/20destroy`: stops and cleans all per-agent units, runtime containers, named volumes, generated runtime files, and the shared OpenViking runtime.
+- `create-module/20create`: initializes `TIMEZONE`, creates base state files and directories, and discovers smarthost settings.
+- `configure-module/20configure`: validates the submitted agent list, stores one metadata file per agent, synchronizes runtime files, and reconciles per-agent services.
+- `configure-module/validate-input.json`: input schema for the Hermes-only `agents` payload.
+- `get-configuration/20read`: returns configured agents with actual runtime status from systemd.
+- `get-configuration/validate-output.json`: output schema for the Hermes-only `agents` response.
+- `destroy-module/20destroy`: stops services, removes containers, and deletes generated per-agent files and directories.
 
 ### `imageroot/bin/`
 
-- `discover-smarthost`: reads cluster smarthost settings, merges public values into `environment`, and writes `SMTP_PASSWORD` to `secrets.env`.
-- `sync-agent-runtime`: writes `agent-<id>.env`, `agent-<id>_secrets.env`, one shared `openviking.conf`, one shared `traefik-route-hosts.json`, and `systemd.env` from the stored configuration, generates role-specific `SOUL.md` files for started user-facing agents when safe to do so, and preserves one shared OpenViking root key, one reserved Hermes API key for the hidden system backend, per-agent tenant metadata, and Hermes-native config in each agent volume for agents that opt into the shared LLM gateway.
-- `ensure-openviking-tenant`: waits for the shared OpenViking service, provisions the per-agent account and user if needed, and writes the tenant API key to `agent-<id>_secrets.env`.
-- `start-agent-services`: reconciles the shared OpenViking service, the dedicated system Hermes backend service, and per-agent systemd targets after `configure-module`.
-- `reload-agent-services`: refreshes active agent targets after smarthost changes.
-- `run-hermes-container`: starts one Hermes container with `slirp4netns` host loopback enabled and one `--add-host ...:host-gateway` entry per cached Traefik route host.
-
-### `imageroot/pypkg/`
-
-- `hermes_agent_runtime.py`: shared runtime helpers for validation, `AGENTS_LIST` parsing, hidden system-agent synthesis, role-specific SOUL rendering and safe seeding, shared embedding settings, Traefik route-host discovery and caching, runtime-file generation, Hermes config synchronization for opted-in agents, shared OpenViking provisioning, per-agent volume naming and cleanup, dynamic Hermes container argv construction, and systemd status checks.
+- `discover-smarthost`: reads cluster smarthost settings and writes public values into `environment` and `SMTP_PASSWORD` into `secrets.env`.
+- `sync-agent-runtime`: writes `agent_<id>.env` and `agent_<id>_secrets.env`, and seeds each Hermes home from the checked-in templates.
 
 ### `imageroot/events/`
 
-- `smarthost-changed/10reload_services`: shell wrapper that refreshes only active per-agent targets when cluster smarthost settings change.
+- `smarthost-changed/10reload_services`: refreshes shared SMTP settings and restarts active agent services.
+
+### `imageroot/pypkg/`
+
+- `hermes_agent_state.py`: small shared helper for validation, env/json file handling, path naming, and service-state checks.
 
 ### `imageroot/systemd/user/`
 
-- `hermes-agent@.target`: per-agent umbrella target.
-- `hermes-agent-openviking.service`: runs the shared OpenViking container with one shared named data volume and one generated `ov.conf` bind mount.
-- `hermes-agent-hermes@.service`: runs the Hermes runtime container in gateway mode through the `run-hermes-container` helper with the per-agent Hermes state volume mounted at `/opt/data`.
-- `hermes-agent-hermes-system.service`: runs the reserved always-on Hermes runtime through the `run-hermes-container` helper and exposes the module-local API server consumed by shared OpenViking.
+- `hermes-agent@.service`: one runtime service per configured agent.
+
+### `imageroot/templates/`
+
+- `SOUL.md.in`: checked-in template used to seed `SOUL.md` with `sed`.
+- `home.env.in`: checked-in template used to seed the default Hermes home `.env` with `sed`.
 
 ## `containers/`
 
-Thin component wrapper images used by the module image labels:
-
-- `containers/hermes/Containerfile`: wrapper around the upstream Hermes runtime image that preserves the upstream `/opt/data` bootstrap entrypoint and defaults to gateway mode.
-- `containers/openviking/Containerfile`: wrapper around the upstream OpenViking image.
+- `containers/hermes/Containerfile`: Hermes wrapper image that keeps the upstream Hermes entrypoint and defaults to gateway mode.
 
 ## `ui/`
 
-The embedded admin UI currently uses Vue 2 and Vue CLI.
+The embedded admin UI uses Vue 2 and Vue CLI.
 
 - `AGENTS.md`: local UI instructions.
-- `README.md`: short UI development note.
-- `package.json`: UI dependencies and scripts such as `serve`, `build`, and `watch`.
-- `Containerfile`: UI image build file.
-- `container-entrypoint.sh`: runs `yarn install` and then `watch` or `build`.
-- `babel.config.js`, `vue.config.js`: UI build configuration.
 - `public/metadata.json`: module metadata used by the UI shell.
 - `public/i18n/`: translation files.
-- `src/App.vue`: top-level embedded shell layout.
-- `src/router/index.js`: router with `status`, `settings`, and `about` views.
-- `src/store/index.js`: Vuex store for embedded module context.
-- `src/views/`: page scaffolds for status, settings, and about.
-- `src/views/Settings.vue`: shared OpenViking embedding settings plus agent-management settings view with table actions, create and edit modals, hidden system-agent filtering, per-agent shared-gateway checkbox, warning UX, and `configure-module` integration.
-- `src/components/`: side menu components.
-- `src/i18n/index.js`: runtime language loading.
-- `src/styles/`: shared Carbon utility styles.
-- `src/assets/`: static UI assets.
+- `src/router/index.js`: routes for status, settings, and about.
+- `src/store/index.js`: embedded module context store.
+- `src/views/Settings.vue`: agent list, create/edit/delete modals, and start/stop state management.
 
 ## `tests/`
 
 - `__init__.robot`: Robot Framework initialization file.
-- `kickstart.robot`: install, configure, shared OpenViking, reserved backend runtime, embedding configuration, hidden tenant metadata, lifecycle, tenant-isolation, persistent-volume, cleanup, and remove test flow.
-- `pythonreq.txt`: Python dependencies used by the test runner.
+- `kickstart.robot`: end-to-end module lifecycle checks.
+- `pythonreq.txt`: Python dependencies for the test runner.
+- `test_runtime_validation.py`: focused unit tests for state helpers and runtime file seeding.

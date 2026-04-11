@@ -7,8 +7,7 @@
     "type": "object",
     "additionalProperties": false,
     "required": [
-        "agents",
-        "openviking"
+        "agents"
     ],
     "properties": {
         "agents": {
@@ -20,12 +19,13 @@
                     "id",
                     "name",
                     "role",
-                    "status"
+                    "status",
+                    "runtime_status"
                 ],
                 "properties": {
                     "id": {
                         "type": "integer",
-                        "minimum": 0
+                        "minimum": 1
                     },
                     "name": {
                         "type": "string",
@@ -52,64 +52,12 @@
                             "stop"
                         ]
                     },
-                    "account": {
+                    "runtime_status": {
                         "type": "string",
-                        "minLength": 1,
-                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-                    },
-                    "user": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-                    },
-                    "agent_id": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-                    },
-                    "hidden": {
-                        "type": "boolean"
-                    },
-                    "protected": {
-                        "type": "boolean"
-                    },
-                    "system": {
-                        "type": "boolean"
-                    },
-                    "use_default_gateway_for_llm": {
-                        "type": "boolean"
-                    }
-                }
-            }
-        },
-        "openviking": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-                "embedding"
-            ],
-            "properties": {
-                "embedding": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                        "api_key_configured"
-                    ],
-                    "properties": {
-                        "provider": {
-                            "type": "string",
-                            "enum": [
-                                "gemini",
-                                "jina",
-                                "minimax",
-                                "openai",
-                                "volcengine",
-                                "voyage"
-                            ]
-                        },
-                        "api_key_configured": {
-                            "type": "boolean"
-                        }
+                        "enum": [
+                            "start",
+                            "stop"
+                        ]
                     }
                 }
             }

@@ -22,71 +22,6 @@
       </cv-row>
       <cv-row>
         <cv-column>
-          <cv-tile light class="section-tile">
-            <cv-grid class="no-padding">
-              <cv-row>
-                <cv-column :md="6" :max="8">
-                  <h4 class="section-title">
-                    {{ $t("settings.openviking_title") }}
-                  </h4>
-                  <p class="section-description">
-                    {{ $t("settings.openviking_description") }}
-                  </p>
-                </cv-column>
-              </cv-row>
-              <cv-row>
-                <cv-column :md="4" :max="8">
-                  <cv-select
-                    v-model="openviking.embedding.provider"
-                    :label="$t('settings.embedding_provider')"
-                    :invalid-message="error.embeddingProvider"
-                    :disabled="loading.getConfiguration || loading.configureModule"
-                    ref="embeddingProvider"
-                    class="mg-bottom-lg"
-                  >
-                    <cv-select-option value="">
-                      {{ $t("settings.embedding_provider_none") }}
-                    </cv-select-option>
-                    <cv-select-option
-                      v-for="provider in embeddingProviders"
-                      :key="provider.value"
-                      :value="provider.value"
-                    >
-                      {{ provider.label }}
-                    </cv-select-option>
-                  </cv-select>
-                </cv-column>
-                <cv-column :md="4" :max="8">
-                  <NsTextInput
-                    v-model.trim="openviking.embedding.api_key"
-                    :label="$t('settings.embedding_api_key')"
-                    :placeholder="$t('settings.embedding_api_key_placeholder')"
-                    :invalid-message="error.embeddingApiKey"
-                    :disabled="loading.getConfiguration || loading.configureModule"
-                    ref="embeddingApiKey"
-                    type="password"
-                  />
-                  <p class="field-helper">
-                    {{ embeddingApiKeyHelper }}
-                  </p>
-                </cv-column>
-              </cv-row>
-              <cv-row v-if="showEmbeddingChangeWarning">
-                <cv-column>
-                  <NsInlineNotification
-                    kind="warning"
-                    :title="$t('settings.embedding_warning_title')"
-                    :description="$t('settings.embedding_warning_description')"
-                    :showCloseButton="false"
-                  />
-                </cv-column>
-              </cv-row>
-            </cv-grid>
-          </cv-tile>
-        </cv-column>
-      </cv-row>
-      <cv-row>
-        <cv-column>
           <cv-tile light>
             <cv-grid class="no-padding">
               <cv-row class="toolbar-row">
@@ -119,7 +54,7 @@
                     :line-count="6"
                   ></cv-skeleton-text>
                   <NsEmptyState
-                    v-else-if="!visibleAgents.length"
+                    v-else-if="!agents.length"
                     :title="$t('settings.no_agents')"
                   ></NsEmptyState>
                   <cv-structured-list v-else>
@@ -139,17 +74,11 @@
                     </template>
                     <template slot="items">
                       <cv-structured-list-item
-                        v-for="agentData in visibleAgents"
+                        v-for="agentData in agents"
                         :key="agentData.id"
                       >
                         <cv-structured-list-data class="break-word">
                           {{ agentData.name }}
-                          <p
-                            v-if="agentData.use_default_gateway_for_llm"
-                            class="gateway-flag"
-                          >
-                            {{ $t("settings.use_default_gateway_for_llm") }}
-                          </p>
                         </cv-structured-list-data>
                         <cv-structured-list-data>
                           {{ roleLabel(agentData.role) }}
@@ -272,24 +201,14 @@
             ref="createAgentRole"
             class="mg-bottom-lg"
           >
-            <cv-select-option v-for="role in roles" :key="`create-${role}`" :value="role">
+            <cv-select-option
+              v-for="role in roles"
+              :key="`create-${role}`"
+              :value="role"
+            >
               {{ roleLabel(role) }}
             </cv-select-option>
           </cv-select>
-          <div class="gateway-checkbox mg-bottom-lg">
-            <label>
-              <input
-                v-model="createAgentForm.use_default_gateway_for_llm"
-                type="checkbox"
-                class="gateway-checkbox-input"
-                :disabled="loading.configureModule"
-              />
-              {{ $t("settings.use_default_gateway_for_llm") }}
-            </label>
-            <p class="field-helper">
-              {{ $t("settings.use_default_gateway_for_llm_help") }}
-            </p>
-          </div>
           <NsInlineNotification
             v-if="showCreateAgentError"
             kind="error"
@@ -335,24 +254,14 @@
             ref="editAgentRole"
             class="mg-bottom-lg"
           >
-            <cv-select-option v-for="role in roles" :key="`edit-${role}`" :value="role">
+            <cv-select-option
+              v-for="role in roles"
+              :key="`edit-${role}`"
+              :value="role"
+            >
               {{ roleLabel(role) }}
             </cv-select-option>
           </cv-select>
-          <div class="gateway-checkbox mg-bottom-lg">
-            <label>
-              <input
-                v-model="editAgentForm.use_default_gateway_for_llm"
-                type="checkbox"
-                class="gateway-checkbox-input"
-                :disabled="loading.configureModule"
-              />
-              {{ $t("settings.use_default_gateway_for_llm") }}
-            </label>
-            <p class="field-helper">
-              {{ $t("settings.use_default_gateway_for_llm_help") }}
-            </p>
-          </div>
           <NsInlineNotification
             v-if="showEditAgentError"
             kind="error"
@@ -365,9 +274,7 @@
       <template slot="secondary-button">{{
         core.$t("common.cancel")
       }}</template>
-      <template slot="primary-button">{{
-        $t("settings.save")
-      }}</template>
+      <template slot="primary-button">{{ $t("settings.save") }}</template>
     </NsModal>
 
     <NsModal
@@ -451,8 +358,6 @@ export default {
         "business_consultant",
         "researcher",
       ],
-      openviking: this.defaultOpenVikingState(),
-      loadedOpenViking: this.defaultOpenVikingState(),
       agents: [],
       submittedAgents: [],
       configureMode: "",
@@ -464,12 +369,10 @@ export default {
       createAgentForm: {
         name: "",
         role: "default",
-        use_default_gateway_for_llm: false,
       },
       editAgentForm: {
         name: "",
         role: "default",
-        use_default_gateway_for_llm: false,
       },
       loading: {
         getConfiguration: false,
@@ -482,39 +385,11 @@ export default {
         createAgentRole: "",
         editAgentName: "",
         editAgentRole: "",
-        embeddingProvider: "",
-        embeddingApiKey: "",
       },
     };
   },
   computed: {
     ...mapState(["instanceName", "core", "appName"]),
-    embeddingProviders() {
-      return [
-        { value: "openai", label: this.$t("settings.embedding_provider_openai") },
-        { value: "volcengine", label: this.$t("settings.embedding_provider_volcengine") },
-        { value: "jina", label: this.$t("settings.embedding_provider_jina") },
-        { value: "voyage", label: this.$t("settings.embedding_provider_voyage") },
-        { value: "minimax", label: this.$t("settings.embedding_provider_minimax") },
-        { value: "gemini", label: this.$t("settings.embedding_provider_gemini") },
-      ];
-    },
-    visibleAgents() {
-      return this.agents.filter((agentData) => !agentData.hidden);
-    },
-    embeddingApiKeyHelper() {
-      if (this.openviking.embedding.api_key_configured && !this.openviking.embedding.api_key) {
-        return this.$t("settings.embedding_api_key_preserved");
-      }
-
-      return this.$t("settings.embedding_api_key_help");
-    },
-    showEmbeddingChangeWarning() {
-      const initialProvider = this.loadedOpenViking.embedding.provider;
-      const currentProvider = this.openviking.embedding.provider;
-
-      return !!initialProvider && initialProvider !== currentProvider;
-    },
     showPageConfigureError() {
       return this.configureMode === "page" && !!this.error.configureModule;
     },
@@ -573,14 +448,12 @@ export default {
       const err = res[0];
 
       if (err) {
-        console.error(`error creating task ${taskAction}`, err);
         this.error.getConfiguration = this.getErrorMessage(err);
         this.loading.getConfiguration = false;
         return;
       }
     },
-    getConfigurationAborted(taskResult, taskContext) {
-      console.error(`${taskContext.action} aborted`, taskResult);
+    getConfigurationAborted() {
       this.error.getConfiguration = this.$t("error.generic_error");
       this.loading.getConfiguration = false;
     },
@@ -589,8 +462,6 @@ export default {
       const config = taskResult.output;
 
       this.agents = this.normalizeAgents(config.agents || []);
-      this.openviking = this.normalizeOpenViking(config.openviking || {});
-      this.loadedOpenViking = this.normalizeOpenViking(config.openviking || {});
     },
     configureModuleValidationFailed(validationErrors) {
       this.loading.configureModule = false;
@@ -602,14 +473,23 @@ export default {
       if (this.configureMode === "edit") {
         this.clearEditAgentErrors();
       }
-      this.clearOpenVikingErrors();
 
       for (const validationError of validationErrors) {
         const field = validationError.field || validationError.parameter || "";
 
-        if (["create", "edit"].includes(this.configureMode) && field !== "(root)" && field !== "") {
-          const nameErrorField = this.configureMode === "create" ? "createAgentName" : "editAgentName";
-          const roleErrorField = this.configureMode === "create" ? "createAgentRole" : "editAgentRole";
+        if (
+          ["create", "edit"].includes(this.configureMode) &&
+          field !== "(root)" &&
+          field !== ""
+        ) {
+          const nameErrorField =
+            this.configureMode === "create"
+              ? "createAgentName"
+              : "editAgentName";
+          const roleErrorField =
+            this.configureMode === "create"
+              ? "createAgentRole"
+              : "editAgentRole";
 
           if (field.endsWith("name")) {
             this.error[nameErrorField] = this.$t("settings.agent_name_invalid");
@@ -629,28 +509,6 @@ export default {
             }
           }
         }
-
-        if (field.includes("provider")) {
-          this.error.embeddingProvider = this.$t(
-            "settings.embedding_provider_invalid"
-          );
-
-          if (!focusAlreadySet) {
-            this.focusElement("embeddingProvider");
-            focusAlreadySet = true;
-          }
-        }
-
-        if (field.includes("api_key")) {
-          this.error.embeddingApiKey = this.$t(
-            "settings.embedding_api_key_invalid"
-          );
-
-          if (!focusAlreadySet) {
-            this.focusElement("embeddingApiKey");
-            focusAlreadySet = true;
-          }
-        }
       }
 
       this.error.configureModule = this.$t("error.validation_error");
@@ -658,7 +516,6 @@ export default {
     async saveAgents(nextAgents, mode) {
       this.loading.configureModule = true;
       this.error.configureModule = "";
-      this.clearOpenVikingErrors();
       this.configureMode = mode;
       this.submittedAgents = this.normalizeAgents(nextAgents);
       const taskAction = "configure-module";
@@ -684,7 +541,6 @@ export default {
           action: taskAction,
           data: {
             agents: this.buildAgentPayload(this.submittedAgents),
-            openviking: this.buildOpenVikingPayload(),
           },
           extra: {
             title: this.$t("settings.configure_instance", {
@@ -698,7 +554,6 @@ export default {
       const err = res[0];
 
       if (err) {
-        console.error(`error creating task ${taskAction}`, err);
         this.error.configureModule = this.getErrorMessage(err);
         this.loading.configureModule = false;
       }
@@ -711,121 +566,33 @@ export default {
             name: (agentData.name || "").trim(),
             role: agentData.role,
             status: agentData.status === "stop" ? "stop" : "start",
-            use_default_gateway_for_llm: !!agentData.use_default_gateway_for_llm,
-            hidden: !!agentData.hidden,
-            protected: !!agentData.protected,
-            system: !!agentData.system,
           };
-
-          for (const field of ["account", "user", "agent_id"]) {
-            if (typeof agentData[field] === "string") {
-              const normalizedValue = agentData[field].trim();
-              if (normalizedValue) {
-                normalizedAgent[field] = normalizedValue;
-              }
-            }
-          }
 
           return normalizedAgent;
         })
         .filter((agentData) => {
           return (
             Number.isInteger(agentData.id) &&
-            agentData.id >= 0 &&
+            agentData.id >= 1 &&
             agentData.name &&
             this.roles.includes(agentData.role)
           );
         })
         .sort((left, right) => left.id - right.id);
     },
-    defaultOpenVikingState() {
-      return {
-        embedding: {
-          provider: "",
-          api_key: "",
-          api_key_configured: false,
-        },
-      };
-    },
-    normalizeOpenViking(openvikingData) {
-      const normalized = this.defaultOpenVikingState();
-      const embedding = openvikingData.embedding || {};
-
-      if (typeof embedding.provider === "string") {
-        normalized.embedding.provider = embedding.provider.trim();
-      }
-      normalized.embedding.api_key_configured = !!embedding.api_key_configured;
-
-      return normalized;
-    },
-    clearOpenVikingErrors() {
-      this.error.embeddingProvider = "";
-      this.error.embeddingApiKey = "";
-    },
-    validateOpenViking() {
-      this.clearOpenVikingErrors();
-
-      const provider = this.openviking.embedding.provider;
-      const apiKey = this.openviking.embedding.api_key;
-      const providerChanged =
-        this.loadedOpenViking.embedding.provider !== provider;
-
-      if (apiKey && !provider) {
-        this.error.embeddingProvider = this.$t("common.required");
-        this.focusElement("embeddingProvider");
-        return false;
-      }
-
-      if (!provider) {
-        return true;
-      }
-
-      if (
-        !apiKey &&
-        (!this.openviking.embedding.api_key_configured || providerChanged)
-      ) {
-        this.error.embeddingApiKey = this.$t("common.required");
-        this.focusElement("embeddingApiKey");
-        return false;
-      }
-
-      return true;
-    },
-    buildOpenVikingPayload() {
-      const embeddingPayload = {};
-      if (this.openviking.embedding.provider) {
-        embeddingPayload.provider = this.openviking.embedding.provider;
-      }
-      if (this.openviking.embedding.api_key) {
-        embeddingPayload.api_key = this.openviking.embedding.api_key;
-      }
-
-      return {
-        embedding: embeddingPayload,
-      };
-    },
     buildAgentPayload(agents) {
       return agents.map((agentData) => {
-        const payload = {
+        return {
           id: agentData.id,
           name: agentData.name,
           role: agentData.role,
           status: agentData.status,
-          use_default_gateway_for_llm: !!agentData.use_default_gateway_for_llm,
         };
-
-        for (const field of ["account", "user", "agent_id"]) {
-          if (typeof agentData[field] === "string" && agentData[field]) {
-            payload[field] = agentData[field];
-          }
-        }
-
-        return payload;
       });
     },
     nextAgentId() {
       return (
-        this.visibleAgents.reduce((maxId, agentData) => {
+        this.agents.reduce((maxId, agentData) => {
           return Math.max(maxId, agentData.id);
         }, 0) + 1
       );
@@ -851,7 +618,6 @@ export default {
       this.createAgentForm = {
         name: "",
         role: "default",
-        use_default_gateway_for_llm: false,
       };
       this.clearCreateAgentErrors();
     },
@@ -859,7 +625,6 @@ export default {
       this.editAgentForm = {
         name: "",
         role: "default",
-        use_default_gateway_for_llm: false,
       };
       this.clearEditAgentErrors();
     },
@@ -891,7 +656,6 @@ export default {
       this.editAgentForm = {
         name: agentData.name,
         role: agentData.role,
-        use_default_gateway_for_llm: !!agentData.use_default_gateway_for_llm,
       };
       this.clearEditAgentErrors();
       this.error.configureModule = "";
@@ -978,13 +742,12 @@ export default {
       }
 
       const nextAgents = [
-        ...this.visibleAgents,
+        ...this.agents,
         {
           id: this.nextAgentId(),
           name: this.createAgentForm.name.trim(),
           role: this.createAgentForm.role,
           status: "start",
-          use_default_gateway_for_llm: this.createAgentForm.use_default_gateway_for_llm,
         },
       ];
 
@@ -995,7 +758,7 @@ export default {
         return;
       }
 
-      const nextAgents = this.visibleAgents.map((agentData) => {
+      const nextAgents = this.agents.map((agentData) => {
         if (agentData.id !== this.agentToEdit.id) {
           return agentData;
         }
@@ -1004,7 +767,6 @@ export default {
           ...agentData,
           name: this.editAgentForm.name.trim(),
           role: this.editAgentForm.role,
-          use_default_gateway_for_llm: this.editAgentForm.use_default_gateway_for_llm,
         };
       });
 
@@ -1034,7 +796,7 @@ export default {
         return;
       }
 
-      const nextAgents = this.visibleAgents.filter((agentData) => {
+      const nextAgents = this.agents.filter((agentData) => {
         return agentData.id !== this.agentToDelete.id;
       });
 
@@ -1054,14 +816,9 @@ export default {
       });
     },
     saveAgentsFromPage() {
-      if (!this.validateOpenViking()) {
-        return;
-      }
-
-      this.saveAgents(this.visibleAgents, "page");
+      this.saveAgents(this.agents, "page");
     },
-    configureModuleAborted(taskResult, taskContext) {
-      console.error(`${taskContext.action} aborted`, taskResult);
+    configureModuleAborted() {
       this.error.configureModule = this.$t("error.generic_error");
       this.loading.configureModule = false;
     },
@@ -1106,10 +863,6 @@ export default {
   margin-bottom: $spacing-06;
 }
 
-.section-tile {
-  margin-bottom: $spacing-06;
-}
-
 .toolbar-actions {
   display: flex;
   justify-content: flex-end;
@@ -1140,26 +893,6 @@ export default {
 
 .break-word {
   word-break: break-word;
-}
-
-.field-helper {
-  margin-top: $spacing-03;
-  color: $text-secondary;
-}
-
-.gateway-flag {
-  margin: $spacing-02 0 0;
-  color: $text-secondary;
-  font-size: 0.875rem;
-}
-
-.gateway-checkbox {
-  display: flex;
-  flex-direction: column;
-}
-
-.gateway-checkbox-input {
-  margin-right: $spacing-03;
 }
 
 @media (max-width: 671px) {

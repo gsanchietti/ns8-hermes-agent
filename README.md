@@ -1,45 +1,54 @@
 # ns8-hermes-agent
 
-`ns8-hermes-agent` is an NS8 module that packages two services into one manageable deployment:
+`ns8-hermes-agent` is an NS8 module that manages one or more Hermes Agent runtimes.
 
-- [Hermes-Agent](https://github.com/NousResearch/hermes-agent), which provides the per-agent runtime and gateway used by each configured assistant
-- [OpenViking](https://github.com/volcengine/OpenViking), which provides the shared multi-tenant backend those agents use for retrieval, indexing, and tenant-scoped workspace data
+The current implementation is intentionally small:
 
-In practical terms, this project exists so an NS8 administrator can define and run multiple Hermes agents from a single module, while reusing one shared OpenViking service behind the scenes instead of standing up a separate backend stack for every agent.
+- Hermes only. OpenViking is gone.
+- No hidden backend runtime and no reserved `agent-0`.
+- One configured agent maps directly to one metadata file, one generated public env file, one generated secrets file, one Hermes home directory, one systemd user service, and one rootless Podman container.
+- A fresh install is idle until at least one agent is configured with `status: start`.
+- `SOUL.md` and the default Hermes home `.env` are seeded from checked-in templates with `sed` placeholder replacement.
 
-The module handles the NS8-specific work needed to make that usable in production: it stores the agent roster in module configuration, provisions tenant data inside OpenViking, generates per-agent runtime files and secrets, manages rootless Podman containers through systemd user units, discovers cluster smarthost settings, and exposes an embedded admin UI for day-to-day configuration.
+This is a pruning release. There is no migration path from the older shared-backend design; treat the current tree as fresh-install only.
 
-This repository is therefore not a generic Hermes application or an upstream OpenViking deployment. It is the integration layer that ties them together for NethServer 8, with the current checked-in tree as the source of truth.
+## Current behavior
 
-## Current code state
+- `create-module` seeds minimal module state in `environment`, `secrets.env`, and `agents/`, records `TIMEZONE`, and discovers smarthost settings.
+- `configure-module` validates the submitted agent list, stores one metadata file per agent, generates per-agent runtime files, and enables or disables the corresponding `hermes-agent@<id>.service` instances.
+- `get-configuration` returns the configured agents, keeps the persisted desired `status`, and reports actual runtime state separately as `runtime_status`.
+- `destroy-module` stops agent services, removes agent containers, and deletes generated per-agent files and directories.
+- `discover-smarthost` still merges shared SMTP settings into `environment` and `secrets.env`.
 
-- module image built by `build-images.sh` and labeled with two dependent wrapper images under `containers/`, plus Traefik route administration authorization for node-local route discovery
-- custom actions: `create-module`, `configure-module`, `get-configuration`, and `destroy-module`
-- `configure-module` validates an `agents` payload, stores `AGENTS_LIST` in `environment`, synchronizes shared and per-agent runtime files, and reconciles per-agent systemd targets
-- the module now runs one shared rootless OpenViking container per module instance, while each started agent gets one rootless Hermes runtime container in gateway mode managed by its own systemd target
-- the module also keeps one reserved always-on Hermes runtime for the shared OpenViking backend; it is backend-managed, hidden from the UI, and not removable through normal agent operations
-- each started agent gets one internal named Podman volume mounted at Hermes `/opt/data`, and the module also keeps one shared OpenViking named volume mounted at `/app/data` for the shared multi-tenant OpenViking server
-- those named volumes are internal to the module for now; the image does not yet declare `org.nethserver.volumes` for NS8 disk-placement integration
-- the module image requests one NS8-managed TCP port at install time; `create-module` persists that allocation into `OPENVIKING_PORT` for the shared OpenViking localhost publish mapping and records the effective `TIMEZONE` for the shared runtime services
-- `get-configuration` returns the configured agents parsed from `AGENTS_LIST` and reports actual runtime status from systemd
-- smarthost discovery helper plus a `smarthost-changed` handler that refreshes active per-agent targets
-- runtime reconciliation now also reads node-local Traefik routes and injects matching host aliases into Hermes containers so same-node routed services avoid failing through public-IP resolution
-- embedded Vue 2 and Vue CLI admin UI with `status`, `settings`, and `about` views; `settings` now manages agents from the NS8 module UI
-- the current implementation does not publish an external HTTP route
-- Robot Framework tests under `tests/`
+## Generated state
+
+Module-wide files:
+
+- `environment`
+- `secrets.env`
+
+Per-agent files:
+
+- `agents/<id>/metadata.json`
+- `agents/<id>/home/SOUL.md`
+- `agents/<id>/home/.env`
+- `agent_<id>.env`
+- `agent_<id>_secrets.env`
+
+Operator-visible runtime names are `hermes-agent-<id>` for containers. The shipped systemd unit is the internal template `hermes-agent@.service`.
 
 ## Repository layout
 
-- `imageroot/` contains the current NS8 actions, helper script, event handler, and user systemd unit.
-- `ui/` contains the embedded Vue 2 and Vue CLI application.
-- `containers/` contains thin component image wrappers for Hermes and OpenViking.
-- `tests/` contains the Robot Framework suite and Python test dependencies.
+- `imageroot/`: NS8 actions, helper scripts, templates, event handler, state helper module, and the user systemd unit.
+- `containers/`: the Hermes wrapper image only.
+- `ui/`: embedded Vue 2 admin UI.
+- `tests/`: Robot Framework integration checks and focused Python unit tests.
 
-See `STRUCTURE.md` for a file-by-file map.
+See `STRUCTURE.md` for a file map.
 
 ## Build
 
-Build the module image and the component images with:
+Build the module image and Hermes wrapper image with:
 
 ```bash
 bash build-images.sh
@@ -50,11 +59,76 @@ The script uses:
 - `REPOBASE`, default `ghcr.io/nethserver`
 - `IMAGETAG`, default `latest`
 
-`IMAGETAG` is normalized so branch names that contain `/` still produce valid image tags.
+## Install
+
+Instantiate the module with:
+
+```bash
+add-module ghcr.io/nethserver/hermes-agent:latest 1
+```
+
+Example output:
+
+```json
+{"module_id": "hermes-agent1", "image_name": "hermes-agent", "image_url": "ghcr.io/nethserver/hermes-agent:latest"}
+```
+
+No agent is created during install.
+
+## Configure
+
+The `configure-module` payload is now only an `agents` array.
+
+Each agent contains:
+
+- `id`: integer starting from `1`
+- `name`: letters and spaces only
+- `role`: one of `default`, `developer`, `marketing`, `sales`, `customer_support`, `social_media_manager`, `business_consultant`, or `researcher`
+- `status`: `start` or `stop`
+
+Example:
+
+```bash
+api-cli run module/hermes-agent1/configure-module --data '{"agents":[{"id":1,"name":"Foo Bar","role":"developer","status":"start"}]}'
+```
+
+That configuration will:
+
+- store `agents/1/metadata.json`
+- generate `agent_1.env` and `agent_1_secrets.env`
+- seed `agents/1/home/SOUL.md` and `agents/1/home/.env` if they do not already exist
+- enable and start `hermes-agent@1.service`
+- run one rootless Podman container named `hermes-agent-1`
+
+Read the current configuration with:
+
+```bash
+api-cli run module/hermes-agent1/get-configuration --data '{}'
+```
+
+Example output:
+
+```json
+{"agents": [{"id": 1, "name": "Foo Bar", "role": "developer", "status": "start", "runtime_status": "start"}]}
+```
+
+`status` is the persisted desired state. `runtime_status` is derived from the actual systemd service state.
+
+## Runtime unit
+
+The shipped user unit is `imageroot/systemd/user/hermes-agent@.service`.
+
+Each started agent runs:
+
+- one `systemctl --user` service instance: `hermes-agent@<id>.service`
+- one container: `hermes-agent-<id>`
+- one bind-mounted Hermes home directory at `/opt/data`
+
+There is no shared target, shared backend service, or shared sidecar container.
 
 ## UI development
 
-The module UI lives in `ui/` and is built into `/ui` inside the module image.
+The embedded UI lives in `ui/`.
 
 For local UI work:
 
@@ -64,7 +138,7 @@ yarn install
 yarn serve
 ```
 
-To build the production UI bundle:
+For a production bundle:
 
 ```bash
 cd ui
@@ -72,196 +146,29 @@ yarn install
 yarn build
 ```
 
-If your shell does not already provide it, set `NODE_OPTIONS=--openssl-legacy-provider` before running the UI toolchain.
-
-## Install
-
-Instantiate the module with:
-
-    add-module ghcr.io/nethserver/hermes-agent:latest 1
-
-The output of the command will return the instance name.
-Output example:
-
-    {"module_id": "hermes-agent1", "image_name": "hermes-agent", "image_url": "ghcr.io/nethserver/hermes-agent:latest"}
-
-The current checked-in refactor covers fresh installs only. No in-place upgrade
-path from the older split Hermes plus gateway runtime is shipped in this tree.
-
-Fresh installs receive one NS8-allocated `TCP_PORT`. The module copies that
-value into `OPENVIKING_PORT` during `create-module` so the shared OpenViking
-service keeps a stable module-local environment contract while NS8 owns the
-actual port reservation. The same install step also records the effective
-`TIMEZONE` so the shared OpenViking container and all Hermes containers use the
-same timezone setting. During later runtime reconciliation, the module will
-also repair a missing `OPENVIKING_PORT` from `TCP_PORT` once if needed.
-
-## Configure
-
-Let's assume that the hermes-agent instance is named `hermes-agent1`.
-
-The current settings UI and `configure-module` action manage an array of
-user-facing agents plus one shared OpenViking embedding configuration. The
-reserved system Hermes backend is returned by `get-configuration` with hidden
-protected, and system flags, but it is filtered out of the visible UI and
-cannot be deleted through normal saves.
-
-Each user-facing agent contains:
-
-- `id`: integer starting from `1`
-- `name`: user-defined string with allowed characters `[A-Za-z ]`
-- `role`: one of `default`, `developer`, `marketing`, `sales`, `customer_support`, `social_media_manager`, `business_consultant`, or `researcher`
-- `status`: one of `start` or `stop`; it is persisted and used to decide whether
-    the per-agent systemd target should be running
-- `use_default_gateway_for_llm`: boolean; when `true`, the agent runtime is
-    configured to use the module's hidden shared Hermes API gateway as its main
-    LLM endpoint
-- hidden backend-only fields `account`, `user`, and `agent_id`: these are
-    auto-generated today, persisted with the roster, and used to provision the
-    agent inside the shared OpenViking server
-
-The persisted runtime value is stored in `environment` as:
-
-    AGENTS_LIST=1:Foo Bar:developer:start:agent-1:agent-1:agent-1:true,2:Alice User:default:stop:agent-2:agent-2:agent-2:false
-
-Example:
-
-    api-cli run module/hermes-agent1/configure-module --data '{"agents":[{"id":1,"name":"Foo Bar","role":"developer","status":"start","use_default_gateway_for_llm":true}],"openviking":{"embedding":{"provider":"jina","api_key":"test-key"}}}'
-
-The above command will:
-- validate and store the agent roster in `environment`
-- persist the shared OpenViking embedding provider in `environment` and its API key in `secrets.env`
-- synchronize `systemd.env`, one shared `openviking.conf`, and per-agent `agent-<id>.env` and `agent-<id>_secrets.env` runtime files
-- synchronize one shared `traefik-route-hosts.json` cache used to inject `--add-host <route>:host-gateway` into Hermes startup
-- synchronize the reserved system Hermes runtime files `agent-0.env` and `agent-0_secrets.env`
-- seed `/opt/data/SOUL.md` for each started user-facing agent with a role-specific identity profile; if a later name or role change still finds the previous module-generated SOUL unchanged, the file is regenerated, otherwise customized SOUL content is preserved
-- prefer `hermes config set ...` inside each agent volume for Hermes-native model settings so opted-in agents keep `config.yaml` and `.env` aligned with the hidden shared gateway endpoint and key
-- remove per-agent runtime files for stopped or deleted agents
-- generate and preserve one shared `OPENVIKING_ROOT_API_KEY` in `secrets.env`
-- generate and preserve one reserved Hermes API server key for the hidden system backend in `agent-0_secrets.env`
-- provision one OpenViking account and admin user per started agent and store that tenant user key as `OPENVIKING_API_KEY` in `agent-<id>_secrets.env`
-- provision the reserved system Hermes tenant so the always-on backend can use the shared OpenViking instance too
-- generate `systemd.env` with only the controlled image variables needed by systemd units, including the internal shared OpenViking host port
-- propagate the saved `TIMEZONE` into the shared OpenViking container and each Hermes container through the shipped user systemd units
-- start Hermes containers with `--network slirp4netns:allow_host_loopback=true` and one `--add-host <route>:host-gateway` entry for each concrete Traefik host discovered on the local node
-- rely on the NS8-allocated `TCP_PORT` copied to `OPENVIKING_PORT` during `create-module` instead of self-reserving the shared OpenViking publish port at runtime
-- start or stop the matching `hermes-agent@<id>.target` instances based on the saved status
-- keep `hermes-agent-hermes-system.service` running as the dedicated OpenViking VLM backend
-- create or clean the matching per-agent Hermes named volumes as containers are started or removed
-- keep the shared OpenViking volume and shared server runtime outside the per-agent targets
-
-The generated shared `openviking.conf` now contains:
-
-- a fixed `vlm` block that points to the reserved Hermes API server over the module-internal loopback publish path
-- an optional `embedding.dense` block generated from the saved embedding provider and API key
-
-Changing the embedding service later is allowed at configuration level, but it
-does not migrate existing vectors inside the shared OpenViking workspace. If you
-switch providers later, clear or rebuild the shared indexed data to avoid
-dimension mismatches or mixed embedding spaces.
-
-Read the current configuration with:
-
-    api-cli run module/hermes-agent1/get-configuration --data '{}'
-
-Example output:
-
-    {"agents": [{"id": 0, "name": "OpenViking Backend", "role": "default", "status": "start", "account": "system", "user": "system", "agent_id": "openviking-backend", "use_default_gateway_for_llm": false, "hidden": true, "protected": true, "system": true}, {"id": 1, "name": "Foo Bar", "role": "developer", "status": "start", "account": "agent-1", "user": "agent-1", "agent_id": "agent-1", "use_default_gateway_for_llm": true, "hidden": false, "protected": false, "system": false}], "openviking": {"embedding": {"provider": "jina", "api_key_configured": true}}}
-
-`status` is returned from the actual systemd-backed runtime state, not only from
-the desired configuration.
-
-Started agents enable a templated user target named `hermes-agent@<id>.target`.
-That target brings up one per-agent Hermes runtime service in gateway mode,
-while all agents share one OpenViking service and the reserved system backend
-uses its own dedicated service:
-
-- `hermes-agent-openviking.service`
-- `hermes-agent-hermes@<id>.service`
-- `hermes-agent-hermes-system.service`
-
-The persistent storage contract is currently:
-
-- `hermes-agent-hermes@<id>.service` mounts `hermes-agent-hermes-data-<id>` at `/opt/data`
-- `hermes-agent-openviking.service` mounts the shared volume `hermes-agent-openviking-data` at `/app/data`
-- `hermes-agent-openviking.service` bind-mounts the generated shared `openviking.conf` to `/app/ov.conf`
-- `hermes-agent-hermes-system.service` mounts `hermes-agent-hermes-data-0` at `/opt/data` and publishes the Hermes API server only on module-local loopback for OpenViking
-
-The Hermes wrapper keeps the upstream Hermes Docker entrypoint and now defaults
-directly to `gateway run`. Upstream Hermes still owns first-start bootstrap for
-`/opt/data`, while the module may pre-seed `.env` and `config.yaml` with
-`hermes config set` before service startup for agents that opt into the shared
-LLM gateway. This keeps the Hermes home in one volume without splitting runtime
-state across two containers.
-
-When `use_default_gateway_for_llm` is enabled for a user-facing agent, the
-module keeps using the hidden reserved backend as the only shared gateway
-server. The opted-in agent is configured as a client of that internal endpoint;
-it does not become a gateway server itself and it does not change the meaning of
-the visible `default` role.
-
-## Smarthost setting discovery
-
-Some settings are discovered from Redis rather than passed through the
-`configure-module` input. The helper `imageroot/bin/discover-smarthost`
-writes public SMTP settings into `environment` and `SMTP_PASSWORD` into
-`secrets.env`. The helper `imageroot/bin/sync-agent-runtime` then copies only
-the agent-specific runtime data into `agent-<id>.env` and
-`agent-<id>_secrets.env`, writes one shared `openviking.conf`, one shared
-`traefik-route-hosts.json`, and `systemd.env`. `OPENVIKING_PORT` and `TIMEZONE` are usually seeded earlier by
-`create-module`; runtime reconciliation primarily consumes those persisted
-values and backfills them when legacy state is missing. The generated per-agent
-files include the shared OpenViking
-endpoint plus tenant-scoped `OPENVIKING_ACCOUNT`, `OPENVIKING_USER`, and
-`OPENVIKING_AGENT_ID` values in `agent-<id>.env`, and the matching tenant
-`OPENVIKING_API_KEY` in `agent-<id>_secrets.env`. The reserved system backend
-also gets `API_SERVER_ENABLED`, `API_SERVER_HOST`, `API_SERVER_PORT`, and a
-generated `API_SERVER_KEY` so OpenViking can use it as an OpenAI-compatible
-backend. The shared `secrets.env` keeps `OPENVIKING_ROOT_API_KEY`, the shared
-embedding API key, and `SMTP_PASSWORD`.
-When Traefik route lookup succeeds, the Hermes startup helper uses the cached
-host list to add concrete same-node route aliases through Podman `--add-host`
-entries. If route lookup is temporarily unavailable, the runtime keeps using the
-last generated cache when present and otherwise starts Hermes without those
-extra aliases.
-The event handler
-`imageroot/events/smarthost-changed/10reload_services` refreshes active agent
-targets when cluster smarthost settings change.
-
-`environment` is shared with NS8 core, so module writers must merge their
-managed keys instead of overwriting the file. `secrets.env` is reserved for
-sensitive values that should not live in the shared environment file, and
-`systemd.env` is generated as a controlled subset for the systemd units.
-
-This is the current scaffold behavior and can be replaced if the module grows
-beyond the template.
-
-## Uninstall
-
-To uninstall the instance:
-
-    remove-module --no-preserve hermes-agent1
+If required by your environment, set `NODE_OPTIONS=--openssl-legacy-provider` before running the UI toolchain.
 
 ## Testing
 
 Run the module test with:
 
+```bash
+./test-module.sh <NODE_ADDR> ghcr.io/nethserver/hermes-agent:latest
+```
 
-    ./test-module.sh <NODE_ADDR> ghcr.io/nethserver/hermes-agent:latest
+The checked-in tests cover the pruned contract:
 
-The checked-in test suite is written with [Robot Framework](https://robotframework.org/) and
-currently validates shared OpenViking runtime generation, actual runtime status
-from `get-configuration`, per-agent target plus runtime container state,
-tenant account isolation through the shared OpenViking admin API, named volume
-creation, persistence across target restart, stopped-agent runtime cleanup,
-reconfiguration cleanup, hidden system-backend behavior, shared embedding
-configuration, and module removal.
+- install produces no active agent runtime
+- zero agents keeps the module idle
+- one started agent produces one service, one container, and one isolated file set
+- stopping an agent disables the runtime without deleting its files
+- removing an agent cleans the runtime files
+- removing the module cleans the instance state
 
-## UI translation
+## Uninstall
 
-Translated with [Weblate](https://hosted.weblate.org/projects/ns8/).
+Remove the instance with:
 
-To setup the translation process:
-
-- add [GitHub Weblate app](https://docs.weblate.org/en/latest/admin/continuous.html#github-setup) to your repository
-- add your repository to [hosted.weblate.org]((https://hosted.weblate.org) or ask a NethServer developer to add it to ns8 Weblate project
+```bash
+remove-module --no-preserve hermes-agent1
+```

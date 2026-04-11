@@ -6,6 +6,9 @@
     "examples": [],
     "type": "object",
     "additionalProperties": false,
+    "required": [
+        "agents"
+    ],
     "properties": {
         "agents": {
             "type": "array",
@@ -47,51 +50,6 @@
                             "start",
                             "stop"
                         ]
-                    },
-                    "account": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-                    },
-                    "user": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-                    },
-                    "agent_id": {
-                        "type": "string",
-                        "minLength": 1,
-                        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
-                    },
-                    "use_default_gateway_for_llm": {
-                        "type": "boolean"
-                    }
-                }
-            }
-        },
-        "openviking": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "embedding": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "provider": {
-                            "type": "string",
-                            "enum": [
-                                "gemini",
-                                "jina",
-                                "minimax",
-                                "openai",
-                                "volcengine",
-                                "voyage"
-                            ]
-                        },
-                        "api_key": {
-                            "type": "string",
-                            "minLength": 1
-                        }
                     }
                 }
             }

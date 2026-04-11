@@ -36,7 +36,6 @@ build_component_image() {
 
 component_images=(
     "${repobase}/hermes-agent-hermes:${imagetag}"
-    "${repobase}/hermes-agent-openviking:${imagetag}"
 )
 
 # Create a new empty container image
@@ -56,16 +55,13 @@ buildah run \
     sh -c "yarn install && yarn build"
 
 build_component_image "hermes-agent-hermes" "containers/hermes"
-build_component_image "hermes-agent-openviking" "containers/openviking"
 
 # Add imageroot directory to the container image
 buildah add "${container}" imageroot /imageroot
 buildah add "${container}" ui/dist /ui
 # Setup the entrypoint and set a rootless container
 buildah config --entrypoint=/ \
-    --label="org.nethserver.authorizations=traefik@node:routeadm" \
     --label="org.nethserver.rootfull=0" \
-    --label="org.nethserver.tcp-ports-demand=1" \
     --label="org.nethserver.images=${component_images[*]}" \
     "${container}"
 # Commit the image

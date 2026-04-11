@@ -1,10 +1,14 @@
 #!/bin/bash
 
-#
-# Copyright (C) 2023 Nethesis S.r.l.
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
+set -euo pipefail
 
-set -e
+runagent discover-smarthost
 
-exec reload-agent-services
+for agent_dir in agents/*; do
+	[[ -d "$agent_dir" ]] || continue
+
+	agent_id="${agent_dir##*/}"
+	if systemctl --user is-active --quiet "hermes-agent@${agent_id}.service"; then
+		systemctl --user restart "hermes-agent@${agent_id}.service"
+	fi
+done

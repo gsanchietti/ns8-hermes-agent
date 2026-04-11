@@ -1,19 +1,19 @@
 {
   "name": "hermes-agent",
   "description": {
-    "en": "My hermes-agent module"
+    "en": "Manage one or more Hermes agents on NethServer 8"
   },
   "categories": [],
   "authors": [
     {
-      "name": "Name Surname",
-      "email": "author@yourmail.org"
+      "name": "NethServer Community",
+      "email": "community@nethserver.org"
     }
   ],
   "docs": {
-    "documentation_url": "https://docs.hermes-agent.com/",
+    "documentation_url": "https://github.com/NethServer/ns8-hermes-agent",
     "bug_url": "https://github.com/NethServer/dev",
-    "code_url": "https://github.com/author/ns8-hermes-agent"
+    "code_url": "https://github.com/NethServer/ns8-hermes-agent"
   },
   "source": "ghcr.io/nethserver/hermes-agent"
 }

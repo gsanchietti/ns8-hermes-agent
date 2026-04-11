@@ -2,193 +2,57 @@ import importlib.util
 import io
 import json
 import os
-import re
 import runpy
 import sys
 import tempfile
 import types
 import unittest
+from contextlib import contextmanager
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import mock
 
 
-RUNTIME_PATH = Path(__file__).resolve().parents[1] / "imageroot" / "pypkg" / "hermes_agent_runtime.py"
-CREATE_MODULE_PATH = Path(__file__).resolve().parents[1] / "imageroot" / "actions" / "create-module" / "20create"
+ROOT = Path(__file__).resolve().parents[1]
+STATE_PATH = ROOT / "imageroot" / "pypkg" / "hermes_agent_state.py"
+SYNC_PATH = ROOT / "imageroot" / "bin" / "sync-agent-runtime"
+CREATE_MODULE_PATH = ROOT / "imageroot" / "actions" / "create-module" / "20create"
+CONFIGURE_MODULE_PATH = ROOT / "imageroot" / "actions" / "configure-module" / "20configure"
+GET_CONFIGURATION_PATH = ROOT / "imageroot" / "actions" / "get-configuration" / "20read"
 
 
-def load_runtime_module():
-    original_agent = sys.modules.get("agent")
-    agent_stub = types.ModuleType("agent")
-    setattr(agent_stub, "set_env", lambda *args, **kwargs: None)
-    sys.modules["agent"] = agent_stub
+def load_module(path, module_name):
+    loader = SourceFileLoader(module_name, str(path))
+    spec = importlib.util.spec_from_loader(module_name, loader)
+    if spec is None:
+        raise RuntimeError(f"failed to load module from {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    loader.exec_module(module)
+    return module
+
+
+@contextmanager
+def working_directory(path):
+    current_directory = os.getcwd()
+    os.chdir(path)
     try:
-        spec = importlib.util.spec_from_file_location("hermes_agent_runtime_under_test", RUNTIME_PATH)
-        if spec is None or spec.loader is None:
-            raise RuntimeError("failed to load runtime module spec")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        yield
     finally:
-        if original_agent is not None:
-            sys.modules["agent"] = original_agent
-        else:
-            del sys.modules["agent"]
+        os.chdir(current_directory)
 
 
-def run_create_module_script(tcp_port):
-    original_agent = sys.modules.get("agent")
-    agent_stub = types.ModuleType("agent")
-    setattr(agent_stub, "set_env", mock.Mock())
-    sys.modules["agent"] = agent_stub
-    try:
-        with mock.patch.dict(os.environ, {"TCP_PORT": tcp_port}, clear=True), mock.patch(
-            "sys.stdin", io.StringIO("{}")
-        ):
-            runpy.run_path(str(CREATE_MODULE_PATH), run_name="__main__")
-    finally:
-        if original_agent is not None:
-            sys.modules["agent"] = original_agent
-        else:
-            del sys.modules["agent"]
-
-    return agent_stub
-
-
-class ConfigureModuleValidationTest(unittest.TestCase):
+class HermesModuleStateTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.runtime = load_runtime_module()
-
-    def test_configure_module_rejects_reserved_openviking_identifiers(self):
-        reserved_cases = [
-            ("account", "system", "agent account system is reserved"),
-            ("user", "system", "agent user system is reserved"),
-            ("agent_id", "openviking-backend", "agent agent_id openviking-backend is reserved"),
-        ]
-
-        for field, value, error_message in reserved_cases:
-            with self.subTest(field=field):
-                payload = {
-                    "agents": [
-                        {
-                            "id": 1,
-                            "name": "Valid Name",
-                            "role": "default",
-                            "status": "start",
-                            field: value,
-                        }
-                    ]
-                }
-
-                with self.assertRaisesRegex(ValueError, re.escape(error_message)):
-                    self.runtime.configure_module(payload)
-
-    def test_system_agent_secrets_preserve_existing_api_server_key(self):
-        system_agent = self.runtime.system_agent_data()
-        secrets_env = self.runtime.build_agent_secrets_env(
-            {},
-            agent_data=system_agent,
-            existing_agent_secrets={self.runtime.HERMES_API_SERVER_KEY_ENV: "preserved-key"},
-        )
-
-        self.assertEqual(secrets_env[self.runtime.HERMES_API_SERVER_KEY_ENV], "preserved-key")
-
-    def test_configure_module_validates_openviking_before_persisting_agents(self):
-        payload = {
-            "agents": [
-                {
-                    "id": 1,
-                    "name": "Valid Name",
-                    "role": "default",
-                    "status": "start",
-                }
-            ],
-            "openviking": {
-                "embedding": {
-                    "provider": "openai",
-                }
-            },
-        }
-
-        with mock.patch.object(self.runtime, "read_openviking_settings", return_value={"embedding": {}}), mock.patch.object(
-            self.runtime, "validate_openviking_settings", side_effect=ValueError("embedding api_key is required")
-        ), mock.patch.object(self.runtime, "persist_agents") as persist_agents:
-            with self.assertRaisesRegex(ValueError, re.escape("embedding api_key is required")):
-                self.runtime.configure_module(payload)
-
-        persist_agents.assert_not_called()
-
-    def test_create_module_persists_ns8_tcp_port_to_openviking_port(self):
-        agent_stub = run_create_module_script("23456")
-
-        agent_stub.set_env.assert_any_call("OPENVIKING_PORT", "23456")
-        agent_stub.set_env.assert_any_call("TIMEZONE", "UTC")
-
-    def test_create_module_normalizes_blank_timezone(self):
-        original_agent = sys.modules.get("agent")
-        agent_stub = types.ModuleType("agent")
-        setattr(agent_stub, "set_env", mock.Mock())
-        sys.modules["agent"] = agent_stub
-        try:
-            with mock.patch.dict(os.environ, {"TCP_PORT": "23456", "TIMEZONE": "   "}, clear=True), mock.patch(
-                "sys.stdin", io.StringIO("{}")
-            ):
-                runpy.run_path(str(CREATE_MODULE_PATH), run_name="__main__")
-        finally:
-            if original_agent is not None:
-                sys.modules["agent"] = original_agent
-            else:
-                del sys.modules["agent"]
-
-        agent_stub.set_env.assert_any_call("TIMEZONE", "UTC")
-
-    def test_create_module_rejects_invalid_tcp_port(self):
-        original_agent = sys.modules.get("agent")
-        agent_stub = types.ModuleType("agent")
-        setattr(agent_stub, "set_env", mock.Mock())
-        sys.modules["agent"] = agent_stub
-        try:
-            with mock.patch.dict(os.environ, {"TCP_PORT": "0"}, clear=True), mock.patch(
-                "sys.stdin", io.StringIO("{}")
-            ):
-                with self.assertRaisesRegex(ValueError, re.escape("invalid TCP_PORT: 0")):
-                    runpy.run_path(str(CREATE_MODULE_PATH), run_name="__main__")
-        finally:
-            if original_agent is not None:
-                sys.modules["agent"] = original_agent
-            else:
-                del sys.modules["agent"]
-
-        agent_stub.set_env.assert_not_called()
-
-    def test_validate_agents_accepts_gateway_flag(self):
-        agents = self.runtime.validate_agents(
-            [
-                {
-                    "id": 1,
-                    "name": "Valid Name",
-                    "role": "default",
-                    "status": "start",
-                    "use_default_gateway_for_llm": True,
-                }
-            ]
-        )
-
-        self.assertTrue(agents[0]["use_default_gateway_for_llm"])
+        cls.state = load_module(STATE_PATH, "hermes_agent_state_under_test")
+        cls.sync = load_module(SYNC_PATH, "sync_agent_runtime_under_test")
 
     def test_validate_agents_accepts_supported_roles(self):
-        for role in [
-            "default",
-            "developer",
-            "marketing",
-            "sales",
-            "customer_support",
-            "social_media_manager",
-            "business_consultant",
-            "researcher",
-        ]:
+        for role in self.state.ALLOWED_ROLES:
             with self.subTest(role=role):
-                agents = self.runtime.validate_agents(
+                agents = self.state.validate_agents(
                     [
                         {
                             "id": 1,
@@ -201,668 +65,343 @@ class ConfigureModuleValidationTest(unittest.TestCase):
 
                 self.assertEqual(agents[0]["role"], role)
 
-    def test_validate_agents_rejects_non_boolean_gateway_flag(self):
-        with self.assertRaisesRegex(ValueError, re.escape("agent at index 0 has an invalid use_default_gateway_for_llm flag")):
-            self.runtime.validate_agents(
+    def test_validate_agents_rejects_unexpected_fields(self):
+        with self.assertRaisesRegex(ValueError, "unexpected fields"):
+            self.state.validate_agents(
                 [
                     {
                         "id": 1,
                         "name": "Valid Name",
                         "role": "default",
                         "status": "start",
-                        "use_default_gateway_for_llm": "yes",
+                        "use_default_gateway_for_llm": True,
                     }
                 ]
             )
 
-    def test_parse_agents_list_keeps_backward_compatibility(self):
-        agents = self.runtime.parse_agents_list("1:Valid Name:default:start:agent-1:agent-1:agent-1")
-
-        self.assertEqual(len(agents), 1)
-        self.assertFalse(agents[0]["use_default_gateway_for_llm"])
-
-    def test_serialize_agents_round_trips_gateway_flag(self):
-        raw_agents = [
-            {
-                "id": 1,
-                "name": "Valid Name",
-                "role": "default",
-                "status": "start",
-                "account": "agent-1",
-                "user": "agent-1",
-                "agent_id": "agent-1",
-                "use_default_gateway_for_llm": True,
-            }
-        ]
-
-        serialized = self.runtime.serialize_agents(raw_agents)
-        parsed = self.runtime.parse_agents_list(serialized)
-
-        self.assertTrue(parsed[0]["use_default_gateway_for_llm"])
-
-    def test_sync_agent_llm_gateway_config_uses_hermes_config_set(self):
-        agent_data = {
-            "id": 1,
-            "use_default_gateway_for_llm": True,
-        }
-        shared_environment = {
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-            self.runtime.HERMES_IMAGE_ENV: "example/hermes:latest",
-        }
-        system_agent_secrets = {
-            self.runtime.HERMES_API_SERVER_KEY_ENV: "test-key",
-        }
-
-        with mock.patch.object(self.runtime, "run_command") as run_command:
-            self.runtime.sync_agent_llm_gateway_config(agent_data, shared_environment, system_agent_secrets)
-
-        commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 4)
-        self.assertEqual(commands[0][-4:], ["config", "set", "model.provider", "custom"])
-        self.assertEqual(commands[1][-4:], ["config", "set", "model.default", self.runtime.HERMES_API_MODEL_NAME])
-        self.assertEqual(
-            commands[2][-4:],
-            ["config", "set", "model.base_url", f"http://{self.runtime.OPENVIKING_CONTAINER_HOST}:{self.runtime.HERMES_API_SERVER_PORT}/v1"],
-        )
-        self.assertEqual(commands[3][-4:], ["config", "set", "OPENAI_API_KEY", "test-key"])
-
-    def test_sync_agent_llm_gateway_config_clears_gateway_settings_when_disabled(self):
-        agent_data = {
-            "id": 1,
-            "use_default_gateway_for_llm": False,
-        }
-        shared_environment = {
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-            self.runtime.HERMES_IMAGE_ENV: "example/hermes:latest",
-        }
-
-        with mock.patch.object(self.runtime, "run_command") as run_command:
-            self.runtime.sync_agent_llm_gateway_config(agent_data, shared_environment, {})
-
-        commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 4)
-        self.assertEqual(commands[0][-4:], ["config", "set", "model.provider", "auto"])
-        self.assertEqual(commands[1][-4:], ["config", "set", "model.default", ""])
-        self.assertEqual(commands[2][-4:], ["config", "set", "model.base_url", ""])
-        self.assertEqual(commands[3][-4:], ["config", "set", "OPENAI_API_KEY", ""])
-
-    def test_sync_agent_llm_gateway_config_requires_system_gateway_key_when_enabled(self):
-        agent_data = {
-            "id": 1,
-            "use_default_gateway_for_llm": True,
-        }
-        shared_environment = {
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-            self.runtime.HERMES_IMAGE_ENV: "example/hermes:latest",
-        }
-
-        with self.assertRaisesRegex(ValueError, re.escape("missing system gateway API key")):
-            self.runtime.sync_agent_llm_gateway_config(agent_data, shared_environment, {})
-
-    def test_render_agent_soul_uses_required_seed_line(self):
-        soul = self.runtime.render_agent_soul("Research Partner", "researcher")
-
-        self.assertTrue(
-            soul.startswith(
-                "- Your name is Research Partner, you are an Hermes Agent that runs on NethServer8\n"
-            )
-        )
-        self.assertIn("## Identity", soul)
-        self.assertIn("evidence, careful synthesis, and honest uncertainty", soul)
-
-    def test_should_replace_agent_soul_allows_previous_seed(self):
-        existing_agent_env = {
-            "AGENT_NAME": "Valid Name",
-            "AGENT_ROLE": "developer",
-        }
-        current_content = self.runtime.render_agent_soul("Valid Name", "developer")
-
-        self.assertTrue(self.runtime.should_replace_agent_soul(current_content, existing_agent_env))
-
-    def test_should_replace_agent_soul_preserves_customized_content(self):
-        existing_agent_env = {
-            "AGENT_NAME": "Valid Name",
-            "AGENT_ROLE": "developer",
-        }
-        current_content = self.runtime.render_agent_soul("Valid Name", "developer") + "\nCustom note\n"
-
-        self.assertFalse(self.runtime.should_replace_agent_soul(current_content, existing_agent_env))
-
-    def test_sync_agent_soul_creates_missing_file(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            hermes_home = Path(temp_dir)
-            agent_data = {
-                "id": 1,
-                "name": "Alice User",
-                "role": "customer_support",
-            }
-
-            with mock.patch.object(self.runtime, "agent_hermes_home", return_value=hermes_home):
-                updated = self.runtime.sync_agent_soul(agent_data, {})
-
-            self.assertTrue(updated)
-            self.assertEqual(
-                (hermes_home / self.runtime.SOUL_FILENAME).read_text(encoding="utf-8"),
-                self.runtime.render_agent_soul("Alice User", "customer_support"),
+    def test_validate_agents_rejects_invalid_id(self):
+        with self.assertRaisesRegex(ValueError, "invalid id"):
+            self.state.validate_agents(
+                [
+                    {
+                        "id": 0,
+                        "name": "Valid Name",
+                        "role": "default",
+                        "status": "start",
+                    }
+                ]
             )
 
-    def test_sync_agent_soul_rewrites_previous_seed_on_role_change(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            hermes_home = Path(temp_dir)
-            soul_path = hermes_home / self.runtime.SOUL_FILENAME
-            soul_path.write_text(self.runtime.render_agent_soul("Alice User", "developer"), encoding="utf-8")
-            agent_data = {
-                "id": 1,
-                "name": "Alice User",
-                "role": "marketing",
-            }
-            existing_agent_env = {
-                "AGENT_NAME": "Alice User",
-                "AGENT_ROLE": "developer",
-            }
+    def test_create_module_sets_timezone_and_initializes_state(self):
+        original_agent = sys.modules.get("agent")
+        agent_stub = types.ModuleType("agent")
+        setattr(agent_stub, "set_env", mock.Mock())
+        sys.modules["agent"] = agent_stub
 
-            with mock.patch.object(self.runtime, "agent_hermes_home", return_value=hermes_home):
-                updated = self.runtime.sync_agent_soul(agent_data, existing_agent_env)
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir), mock.patch.dict(
+                os.environ,
+                {"TIMEZONE": " Europe/Rome "},
+                clear=True,
+            ), mock.patch("sys.stdin", io.StringIO("{}")), mock.patch("subprocess.run") as run_command:
+                runpy.run_path(str(CREATE_MODULE_PATH), run_name="__main__")
+                self.assertTrue(Path(temp_dir, "agents").is_dir())
+                self.assertTrue(Path(temp_dir, "secrets.env").is_file())
+        finally:
+            if original_agent is not None:
+                sys.modules["agent"] = original_agent
+            else:
+                del sys.modules["agent"]
 
-            self.assertTrue(updated)
-            self.assertEqual(
+        agent_stub.set_env.assert_called_once_with("TIMEZONE", "Europe/Rome")
+        run_command.assert_called_once_with(["runagent", "discover-smarthost"], check=True)
+
+    def test_create_module_rejects_symlinked_state_paths(self):
+        original_agent = sys.modules.get("agent")
+        agent_stub = types.ModuleType("agent")
+        setattr(agent_stub, "set_env", mock.Mock())
+        sys.modules["agent"] = agent_stub
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir), mock.patch.dict(
+                os.environ,
+                {"TIMEZONE": "UTC"},
+                clear=True,
+            ), mock.patch("sys.stdin", io.StringIO("{}")):
+                Path("target-dir").mkdir()
+                os.symlink("target-dir", "agents")
+
+                with self.assertRaisesRegex(ValueError, "unsafe directory path"):
+                    runpy.run_path(str(CREATE_MODULE_PATH), run_name="__main__")
+        finally:
+            if original_agent is not None:
+                sys.modules["agent"] = original_agent
+            else:
+                del sys.modules["agent"]
+
+    def test_write_envfile_rejects_symlink_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            Path("outside.env").write_text("SAFE=1\n", encoding="utf-8")
+            os.symlink("outside.env", self.state.agent_envfile(5))
+
+            with self.assertRaisesRegex(ValueError, "unsafe file path"):
+                self.state.write_envfile(self.state.agent_envfile(5), {"AGENT_NAME": "Blocked"})
+
+            self.assertEqual(Path("outside.env").read_text(encoding="utf-8"), "SAFE=1\n")
+
+    def test_sync_agent_runtime_files_seeds_home_and_env_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(1),
+                {"id": 1, "name": "Alice User", "role": "developer", "status": "start"},
+            )
+            self.state.write_envfile(
+                self.state.ENVIRONMENT_FILE,
+                {
+                    "TIMEZONE": "UTC",
+                    "SMTP_ENABLED": "1",
+                    "SMTP_HOST": "smtp.example.org",
+                },
+            )
+            self.state.write_envfile(self.state.SHARED_SECRETS_ENVFILE, {"SMTP_PASSWORD": "secret-pass"})
+
+            self.sync.sync_agent_runtime_files()
+
+            public_env = self.state.read_envfile(self.state.agent_envfile(1))
+            agent_secrets = self.state.read_envfile(self.state.agent_secrets_envfile(1))
+            soul_path = self.state.agent_home_dir(1) / "SOUL.md"
+            home_env_path = self.state.agent_home_dir(1) / ".env"
+
+            self.assertEqual(public_env["AGENT_NAME"], "Alice User")
+            self.assertEqual(public_env["AGENT_ROLE"], "developer")
+            self.assertEqual(public_env["SMTP_HOST"], "smtp.example.org")
+            self.assertEqual(agent_secrets["SMTP_PASSWORD"], "secret-pass")
+            self.assertTrue(agent_secrets["HERMES_AGENT_SECRET"])
+            self.assertIn("Your name is Alice User.", soul_path.read_text(encoding="utf-8"))
+            self.assertIn("AGENT_NAME=Alice User", home_env_path.read_text(encoding="utf-8"))
+            self.assertIn("AGENT_ROLE=developer", home_env_path.read_text(encoding="utf-8"))
+
+    def test_sync_agent_runtime_files_preserves_existing_home_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(2),
+                {"id": 2, "name": "Bob Agent", "role": "marketing", "status": "stop"},
+            )
+            home_dir = self.state.agent_home_dir(2)
+            self.state.ensure_private_directory(home_dir)
+            soul_path = home_dir / "SOUL.md"
+            home_env_path = home_dir / ".env"
+            soul_path.write_text("custom soul\n", encoding="utf-8")
+            home_env_path.write_text("CUSTOM=true\n", encoding="utf-8")
+
+            self.sync.sync_agent_runtime_files(agent_id=2)
+
+            self.assertEqual(soul_path.read_text(encoding="utf-8"), "custom soul\n")
+            self.assertEqual(home_env_path.read_text(encoding="utf-8"), "CUSTOM=true\n")
+
+    def test_sync_agent_runtime_files_updates_seeded_home_files_after_agent_edit(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(2),
+                {"id": 2, "name": "Bob Agent", "role": "marketing", "status": "start"},
+            )
+
+            self.sync.sync_agent_runtime_files(agent_id=2)
+
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(2),
+                {"id": 2, "name": "Bob Renamed", "role": "business_consultant", "status": "start"},
+            )
+
+            self.sync.sync_agent_runtime_files(agent_id=2)
+
+            soul_path = self.state.agent_home_dir(2) / "SOUL.md"
+            home_env_path = self.state.agent_home_dir(2) / ".env"
+
+            self.assertIn("Your name is Bob Renamed.", soul_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                "Your configured role is business consultant.",
                 soul_path.read_text(encoding="utf-8"),
-                self.runtime.render_agent_soul("Alice User", "marketing"),
+            )
+            self.assertIn("AGENT_NAME=Bob Renamed", home_env_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                "AGENT_ROLE=business_consultant",
+                home_env_path.read_text(encoding="utf-8"),
             )
 
-    def test_sync_agent_soul_rewrites_previous_seed_on_name_change(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            hermes_home = Path(temp_dir)
-            soul_path = hermes_home / self.runtime.SOUL_FILENAME
-            soul_path.write_text(self.runtime.render_agent_soul("Alice User", "developer"), encoding="utf-8")
-            agent_data = {
-                "id": 1,
-                "name": "Alice Agent",
-                "role": "developer",
-            }
-            existing_agent_env = {
-                "AGENT_NAME": "Alice User",
-                "AGENT_ROLE": "developer",
-            }
-
-            with mock.patch.object(self.runtime, "agent_hermes_home", return_value=hermes_home):
-                updated = self.runtime.sync_agent_soul(agent_data, existing_agent_env)
-
-            self.assertTrue(updated)
-            self.assertEqual(
-                soul_path.read_text(encoding="utf-8"),
-                self.runtime.render_agent_soul("Alice Agent", "developer"),
+    def test_sync_agent_runtime_files_preserves_customized_seeded_home_files_after_agent_edit(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(2),
+                {"id": 2, "name": "Bob Agent", "role": "marketing", "status": "start"},
             )
 
-    def test_sync_agent_soul_preserves_customized_file(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            hermes_home = Path(temp_dir)
-            soul_path = hermes_home / self.runtime.SOUL_FILENAME
+            self.sync.sync_agent_runtime_files(agent_id=2)
+
+            soul_path = self.state.agent_home_dir(2) / "SOUL.md"
+            home_env_path = self.state.agent_home_dir(2) / ".env"
             soul_path.write_text("customized soul\n", encoding="utf-8")
-            agent_data = {
-                "id": 1,
-                "name": "Alice User",
-                "role": "marketing",
-            }
-            existing_agent_env = {
-                "AGENT_NAME": "Alice User",
-                "AGENT_ROLE": "developer",
-            }
+            home_env_path.write_text("CUSTOM=true\n", encoding="utf-8")
 
-            with mock.patch.object(self.runtime, "agent_hermes_home", return_value=hermes_home):
-                updated = self.runtime.sync_agent_soul(agent_data, existing_agent_env)
-
-            self.assertFalse(updated)
-            self.assertEqual(soul_path.read_text(encoding="utf-8"), "customized soul\n")
-
-    def test_read_private_textfile_ignores_symlink(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            target_path = temp_path / "target.txt"
-            target_path.write_text("target content\n", encoding="utf-8")
-            link_path = temp_path / self.runtime.SOUL_FILENAME
-            os.symlink(target_path, link_path)
-
-            self.assertIsNone(self.runtime.read_private_textfile(link_path))
-
-    def test_sync_agent_soul_replaces_symlink_without_following_it(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            hermes_home = Path(temp_dir)
-            target_path = hermes_home / "outside.txt"
-            target_path.write_text("do not overwrite\n", encoding="utf-8")
-            soul_path = hermes_home / self.runtime.SOUL_FILENAME
-            os.symlink(target_path, soul_path)
-            agent_data = {
-                "id": 1,
-                "name": "Alice User",
-                "role": "marketing",
-            }
-
-            with mock.patch.object(self.runtime, "agent_hermes_home", return_value=hermes_home):
-                updated = self.runtime.sync_agent_soul(agent_data, {})
-
-            self.assertTrue(updated)
-            self.assertFalse(soul_path.is_symlink())
-            self.assertEqual(
-                soul_path.read_text(encoding="utf-8"),
-                self.runtime.render_agent_soul("Alice User", "marketing"),
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(2),
+                {"id": 2, "name": "Bob Renamed", "role": "business_consultant", "status": "start"},
             )
+
+            self.sync.sync_agent_runtime_files(agent_id=2)
+
+            self.assertEqual(soul_path.read_text(encoding="utf-8"), "customized soul\n")
+            self.assertEqual(home_env_path.read_text(encoding="utf-8"), "CUSTOM=true\n")
+
+    def test_sync_agent_runtime_files_replaces_symlinked_seed_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(4),
+                {"id": 4, "name": "Dana Agent", "role": "sales", "status": "start"},
+            )
+            home_dir = self.state.agent_home_dir(4)
+            self.state.ensure_private_directory(home_dir)
+            soul_path = home_dir / "SOUL.md"
+            target_path = home_dir / "outside.txt"
+            target_path.write_text("do not overwrite\n", encoding="utf-8")
+            os.symlink(target_path, soul_path)
+
+            self.sync.sync_agent_runtime_files(agent_id=4)
+
+            self.assertFalse(soul_path.is_symlink())
+            self.assertIn("Your name is Dana Agent.", soul_path.read_text(encoding="utf-8"))
             self.assertEqual(target_path.read_text(encoding="utf-8"), "do not overwrite\n")
 
-    def test_extract_route_hosts_normalizes_and_deduplicates_hosts(self):
-        route_data = [
-            {"host": "portal.example.org"},
-            {"host": "Portal.Example.Org."},
-            {"host": "*.example.org"},
-            {"host": "127.0.0.1"},
-            {"host": "localhost"},
-            {"host": "host.containers.internal"},
-            {"host": "intranet"},
-            {"host": ""},
-            {"host": ["wiki.example.org", "wiki.example.org "]},
-            {"path": "/no-host"},
-        ]
-
-        self.assertEqual(
-            self.runtime.extract_route_hosts(route_data),
-            ["portal.example.org", "wiki.example.org"],
-        )
-
-    def test_fetch_node_traefik_route_hosts_uses_expanded_list_routes(self):
-        agent_tasks = types.SimpleNamespace(
-            run=mock.Mock(
-                return_value={
-                    "exit_code": 0,
-                    "output": json.dumps([
-                        {"host": "portal.example.org"},
-                        {"host": "wiki.example.org"},
-                    ]),
-                }
+    def test_sync_agent_runtime_files_preserves_existing_agent_secret(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(3),
+                {"id": 3, "name": "Carol Agent", "role": "researcher", "status": "start"},
             )
-        )
+            self.state.write_envfile(
+                self.state.agent_secrets_envfile(3),
+                {"HERMES_AGENT_SECRET": "preserved", "SMTP_PASSWORD": "old-pass"},
+            )
+            self.state.write_envfile(self.state.SHARED_SECRETS_ENVFILE, {"SMTP_PASSWORD": "new-pass"})
 
-        with mock.patch.object(self.runtime.agent, "resolve_agent_id", return_value="module/traefik1", create=True), mock.patch(
-            "importlib.import_module",
-            return_value=agent_tasks,
-        ):
-            route_hosts = self.runtime.fetch_node_traefik_route_hosts()
+            self.sync.sync_agent_runtime_files(agent_id=3)
 
-        self.assertEqual(route_hosts, ["portal.example.org", "wiki.example.org"])
-        agent_tasks.run.assert_called_once_with(
-            agent_id="module/traefik1",
-            action="list-routes",
-            data={"expand_list": True},
-        )
+            agent_secrets = self.state.read_envfile(self.state.agent_secrets_envfile(3))
+            self.assertEqual(agent_secrets["HERMES_AGENT_SECRET"], "preserved")
+            self.assertEqual(agent_secrets["SMTP_PASSWORD"], "new-pass")
 
-    def test_sync_traefik_route_hosts_reuses_cached_hosts_on_failure(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            route_hosts_path = Path(temp_dir) / self.runtime.TRAEFIK_ROUTE_HOSTS_STATEFILE
-            route_hosts_path.write_text(json.dumps(["cached.example.org"]), encoding="utf-8")
+    def test_configure_module_reconciles_removed_and_started_agents(self):
+        original_agent = sys.modules.get("agent")
+        agent_stub = types.ModuleType("agent")
+        setattr(agent_stub, "set_env", mock.Mock())
+        sys.modules["agent"] = agent_stub
 
-            with mock.patch.object(
-                self.runtime,
-                "fetch_node_traefik_route_hosts",
-                side_effect=RuntimeError("traefik unavailable"),
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+                self.state.write_jsonfile(
+                    self.state.agent_metadata_path(2),
+                    {"id": 2, "name": "Old Agent", "role": "default", "status": "stop"},
+                )
+                self.state.write_envfile(self.state.agent_envfile(2), {"AGENT_NAME": "Old Agent"})
+                self.state.write_envfile(
+                    self.state.agent_secrets_envfile(2),
+                    {"HERMES_AGENT_SECRET": "old-secret"},
+                )
+
+                with mock.patch("sys.stdin", io.StringIO(json.dumps({
+                    "agents": [
+                        {
+                            "id": 1,
+                            "name": "New Agent",
+                            "role": "developer",
+                            "status": "start",
+                        }
+                    ]
+                }))), mock.patch("subprocess.run") as run_command:
+                    runpy.run_path(str(CONFIGURE_MODULE_PATH), run_name="__main__")
+
+                self.assertEqual(
+                    self.state.read_jsonfile(self.state.agent_metadata_path(1)),
+                    {"id": 1, "name": "New Agent", "role": "developer", "status": "start"},
+                )
+                self.assertFalse(self.state.agent_dir(2).exists())
+                self.assertFalse(self.state.agent_envfile(2).exists())
+                self.assertFalse(self.state.agent_secrets_envfile(2).exists())
+                agent_stub.set_env.assert_called_once_with(self.state.TIMEZONE_ENV, self.state.TIMEZONE_DEFAULT)
+                self.assertEqual(
+                    run_command.call_args_list,
+                    [
+                        mock.call(
+                            ["systemctl", "--user", "disable", "--now", "hermes-agent@2.service"],
+                            check=False,
+                        ),
+                        mock.call(["podman", "rm", "--force", "hermes-agent-2"], check=False),
+                        mock.call(["runagent", "discover-smarthost"], check=True),
+                        mock.call(["runagent", "sync-agent-runtime"], check=True),
+                        mock.call(["systemctl", "--user", "daemon-reload"], check=True),
+                        mock.call(["systemctl", "--user", "enable", "hermes-agent@1.service"], check=True),
+                        mock.call(["systemctl", "--user", "stop", "hermes-agent@1.service"], check=False),
+                        mock.call(["systemctl", "--user", "start", "hermes-agent@1.service"], check=True),
+                    ],
+                )
+        finally:
+            if original_agent is not None:
+                sys.modules["agent"] = original_agent
+            else:
+                del sys.modules["agent"]
+
+    def test_get_configuration_reports_actual_runtime_status_separately(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(1),
+                {"id": 1, "name": "Runtime Agent", "role": "developer", "status": "stop"},
+            )
+            stdout = io.StringIO()
+
+            with mock.patch("sys.stdout", stdout), mock.patch(
+                "subprocess.run",
+                return_value=types.SimpleNamespace(returncode=0),
             ):
-                route_hosts = self.runtime.sync_traefik_route_hosts(route_hosts_path)
+                runpy.run_path(str(GET_CONFIGURATION_PATH), run_name="__main__")
 
-            self.assertEqual(route_hosts, ["cached.example.org"])
             self.assertEqual(
-                json.loads(route_hosts_path.read_text(encoding="utf-8")),
-                ["cached.example.org"],
+                json.loads(stdout.getvalue()),
+                {
+                    "agents": [
+                        {
+                            "id": 1,
+                            "name": "Runtime Agent",
+                            "role": "developer",
+                            "status": "stop",
+                            "runtime_status": "start",
+                        }
+                    ]
+                },
             )
 
-    def test_sync_traefik_route_hosts_reuses_cached_hosts_on_unexpected_exception(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            route_hosts_path = Path(temp_dir) / self.runtime.TRAEFIK_ROUTE_HOSTS_STATEFILE
-            route_hosts_path.write_text(json.dumps(["cached.example.org"]), encoding="utf-8")
-
-            with mock.patch.object(
-                self.runtime,
-                "fetch_node_traefik_route_hosts",
-                side_effect=ValueError("malformed response"),
-            ):
-                route_hosts = self.runtime.sync_traefik_route_hosts(route_hosts_path)
-
-            self.assertEqual(route_hosts, ["cached.example.org"])
-
-    def test_sync_traefik_route_hosts_writes_empty_list_without_cache(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            route_hosts_path = Path(temp_dir) / self.runtime.TRAEFIK_ROUTE_HOSTS_STATEFILE
-
-            with mock.patch.object(
-                self.runtime,
-                "fetch_node_traefik_route_hosts",
-                side_effect=RuntimeError("traefik unavailable"),
-            ):
-                route_hosts = self.runtime.sync_traefik_route_hosts(route_hosts_path)
-
-            self.assertEqual(route_hosts, [])
-            self.assertEqual(json.loads(route_hosts_path.read_text(encoding="utf-8")), [])
-
-    def test_sync_traefik_route_hosts_writes_fetched_hosts_on_success(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            route_hosts_path = Path(temp_dir) / self.runtime.TRAEFIK_ROUTE_HOSTS_STATEFILE
-
-            with mock.patch.object(
-                self.runtime,
-                "fetch_node_traefik_route_hosts",
-                return_value=["portal.example.org", "wiki.example.org"],
-            ):
-                route_hosts = self.runtime.sync_traefik_route_hosts(route_hosts_path)
-
-            self.assertEqual(route_hosts, ["portal.example.org", "wiki.example.org"])
-            self.assertEqual(
-                json.loads(route_hosts_path.read_text(encoding="utf-8")),
-                ["portal.example.org", "wiki.example.org"],
+    def test_list_known_agent_ids_scans_metadata_and_generated_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(1),
+                {"id": 1, "name": "One Agent", "role": "default", "status": "start"},
             )
+            self.state.write_envfile(self.state.agent_envfile(2), {"AGENT_NAME": "Two Agent"})
+            self.state.write_envfile(self.state.agent_secrets_envfile(3), {"HERMES_AGENT_SECRET": "secret"})
 
-    def test_build_hermes_container_command_adds_network_and_route_hosts(self):
-        shared_environment = {
-            self.runtime.TIMEZONE_ENV: "UTC",
-            self.runtime.HERMES_IMAGE_ENV: "example/hermes:latest",
-        }
+            self.assertEqual(self.state.list_known_agent_ids(), [1, 2, 3])
 
-        command = self.runtime.build_hermes_container_command(
-            3,
-            shared_environment,
-            publish=["127.0.0.1:8642:8642"],
-            route_hosts=["portal.example.org", "wiki.example.org"],
-        )
-
-        self.assertIn("--network", command)
-        self.assertIn(self.runtime.HERMES_CONTAINER_NETWORK, command)
-        self.assertIn("--publish", command)
-        self.assertIn("127.0.0.1:8642:8642", command)
-        self.assertIn("portal.example.org:host-gateway", command)
-        self.assertIn("wiki.example.org:host-gateway", command)
-        self.assertEqual(command[-1], "example/hermes:latest")
-
-    def test_run_hermes_container_uses_cached_route_hosts_by_default(self):
-        shared_environment = {
-            self.runtime.TIMEZONE_ENV: "UTC",
-            self.runtime.HERMES_IMAGE_ENV: "example/hermes:latest",
-        }
-
+    def test_actual_agent_status_uses_systemctl_result(self):
         with mock.patch.object(
-            self.runtime,
-            "read_optional_envfile",
-            return_value=shared_environment,
-        ), mock.patch.object(
-            self.runtime,
-            "read_cached_traefik_route_hosts",
-            return_value=["portal.example.org"],
-        ), mock.patch.object(
-            self.runtime,
-            "run_command",
+            self.state.subprocess,
+            "run",
             return_value=types.SimpleNamespace(returncode=0),
         ) as run_command:
-            returncode = self.runtime.run_hermes_container(3, publish=["127.0.0.1:8642:8642"])
+            status = self.state.actual_agent_status(7)
 
-        self.assertEqual(returncode, 0)
-        command = run_command.call_args.args[0]
-        self.assertIn("--publish", command)
-        self.assertIn("127.0.0.1:8642:8642", command)
-        self.assertIn("--add-host", command)
-        self.assertIn("portal.example.org:host-gateway", command)
-        self.assertEqual(run_command.call_args.kwargs["check"], False)
+        self.assertEqual(status, "start")
+        run_command.assert_called_once()
 
-    def test_sync_agent_runtime_files_seeds_soul_only_for_started_user_agents(self):
-        started_agent = {
-            "id": 1,
-            "name": "Started Agent",
-            "role": "developer",
-            "status": "start",
-            "account": "agent-1",
-            "user": "agent-1",
-            "agent_id": "agent-1",
-            "use_default_gateway_for_llm": False,
-        }
-        stopped_agent = {
-            "id": 2,
-            "name": "Stopped Agent",
-            "role": "marketing",
-            "status": "stop",
-            "account": "agent-2",
-            "user": "agent-2",
-            "agent_id": "agent-2",
-            "use_default_gateway_for_llm": False,
-        }
-        shared_environment = {
-            self.runtime.OPENVIKING_PORT_ENV: "23456",
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-            self.runtime.HERMES_IMAGE_ENV: "example/hermes:latest",
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-
-        def read_optional_envfile_side_effect(path):
-            if path == self.runtime.ENVIRONMENT_FILE:
-                return shared_environment
-            if path == self.runtime.SHARED_SECRETS_ENVFILE:
-                return shared_secrets
-            return {}
-
-        with mock.patch.object(
-            self.runtime,
-            "read_managed_agents_from_state",
-            return_value=[self.runtime.system_agent_data(), started_agent, stopped_agent],
-        ), mock.patch.object(
-            self.runtime,
-            "read_optional_envfile",
-            side_effect=read_optional_envfile_side_effect,
-        ), mock.patch.object(
-            self.runtime,
-            "ensure_shared_openviking_settings",
-            return_value=(23456, "root-key", self.runtime.HERMES_API_SERVER_PORT),
-        ), mock.patch.object(
-            self.runtime,
-            "build_agent_secrets_env",
-            return_value={},
-        ), mock.patch.object(
-            self.runtime,
-            "build_openviking_config",
-            return_value={},
-        ), mock.patch.object(
-            self.runtime,
-            "write_envfile",
-        ), mock.patch.object(
-            self.runtime,
-            "sync_traefik_route_hosts",
-            return_value=[],
-        ), mock.patch.object(
-            self.runtime,
-            "write_jsonfile",
-        ), mock.patch.object(
-            self.runtime,
-            "sync_agent_llm_gateway_config",
-        ), mock.patch.object(
-            self.runtime,
-            "sync_agent_soul",
-        ) as sync_agent_soul:
-            self.runtime.sync_agent_runtime_files()
-
-        sync_agent_soul.assert_called_once_with(started_agent, {})
-
-    def test_sync_agent_runtime_files_skips_route_refresh_for_agent_specific_sync_with_cache(self):
-        shared_environment = {
-            self.runtime.OPENVIKING_PORT_ENV: "23456",
-            self.runtime.TIMEZONE_ENV: "UTC",
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-            self.runtime.HERMES_IMAGE_ENV: "example/hermes:latest",
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-        agent_data = {
-            "id": 1,
-            "name": "Started Agent",
-            "role": "developer",
-            "status": "start",
-            "account": "agent-1",
-            "user": "agent-1",
-            "agent_id": "agent-1",
-            "use_default_gateway_for_llm": False,
-        }
-
-        def read_optional_envfile_side_effect(path):
-            if path == self.runtime.ENVIRONMENT_FILE:
-                return shared_environment
-            if path == self.runtime.SHARED_SECRETS_ENVFILE:
-                return shared_secrets
-            return {}
-
-        with mock.patch.object(
-            self.runtime,
-            "read_managed_agents_from_state",
-            return_value=[self.runtime.system_agent_data(), agent_data],
-        ), mock.patch.object(
-            self.runtime,
-            "read_optional_envfile",
-            side_effect=read_optional_envfile_side_effect,
-        ), mock.patch.object(
-            self.runtime,
-            "ensure_shared_openviking_settings",
-            return_value=(23456, "root-key", self.runtime.HERMES_API_SERVER_PORT),
-        ), mock.patch.object(
-            self.runtime,
-            "build_agent_secrets_env",
-            return_value={},
-        ), mock.patch.object(
-            self.runtime,
-            "build_openviking_config",
-            return_value={},
-        ), mock.patch.object(
-            self.runtime,
-            "write_envfile",
-        ), mock.patch.object(
-            self.runtime,
-            "read_cached_traefik_route_hosts",
-            return_value=["portal.example.org"],
-        ), mock.patch.object(
-            self.runtime,
-            "sync_traefik_route_hosts",
-        ) as sync_traefik_route_hosts, mock.patch.object(
-            self.runtime,
-            "write_jsonfile",
-        ), mock.patch.object(
-            self.runtime,
-            "sync_agent_llm_gateway_config",
-        ), mock.patch.object(
-            self.runtime,
-            "sync_agent_soul",
-        ):
-            self.runtime.sync_agent_runtime_files(agent_id=1)
-
-        sync_traefik_route_hosts.assert_not_called()
-
-    def test_ensure_shared_openviking_settings_requires_preseeded_openviking_port(self):
-        shared_environment = {
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-
-        with self.assertRaisesRegex(
-            ValueError, re.escape(f"invalid {self.runtime.OPENVIKING_PORT_ENV}: None")
-        ):
-            self.runtime.ensure_shared_openviking_settings(shared_environment, shared_secrets)
-
-    def test_ensure_shared_openviking_settings_preserves_preseeded_openviking_port(self):
-        shared_environment = {
-            self.runtime.OPENVIKING_PORT_ENV: "23456",
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-
-        port, root_api_key, system_api_port = self.runtime.ensure_shared_openviking_settings(
-            shared_environment, shared_secrets
-        )
-
-        self.assertEqual(port, 23456)
-        self.assertEqual(root_api_key, "root-key")
-        self.assertEqual(system_api_port, self.runtime.HERMES_API_SERVER_PORT)
-
-    def test_ensure_shared_openviking_settings_backfills_from_ns8_tcp_port(self):
-        shared_environment = {
-            self.runtime.TCP_PORT_ENV: "23456",
-            self.runtime.TIMEZONE_ENV: "UTC",
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-
-        with mock.patch.object(self.runtime.agent, "set_env") as set_env:
-            port, root_api_key, system_api_port = self.runtime.ensure_shared_openviking_settings(
-                shared_environment, shared_secrets
-            )
-
-        self.assertEqual(port, 23456)
-        self.assertEqual(root_api_key, "root-key")
-        self.assertEqual(system_api_port, self.runtime.HERMES_API_SERVER_PORT)
-        self.assertEqual(shared_environment[self.runtime.OPENVIKING_PORT_ENV], "23456")
-        set_env.assert_called_once_with(self.runtime.OPENVIKING_PORT_ENV, "23456")
-
-    def test_ensure_shared_openviking_settings_still_allocates_system_api_port(self):
-        shared_environment = {
-            self.runtime.OPENVIKING_PORT_ENV: "23456",
-            self.runtime.TIMEZONE_ENV: "UTC",
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-
-        with mock.patch.object(self.runtime, "reserve_tcp_port", return_value=34567), mock.patch.object(
-            self.runtime.agent, "set_env"
-        ) as set_env:
-            port, root_api_key, system_api_port = self.runtime.ensure_shared_openviking_settings(
-                shared_environment, shared_secrets
-            )
-
-        self.assertEqual(port, 23456)
-        self.assertEqual(root_api_key, "root-key")
-        self.assertEqual(system_api_port, 34567)
-        set_env.assert_called_once_with(self.runtime.HERMES_SYSTEM_API_PORT_ENV, "34567")
-
-    def test_ensure_shared_openviking_settings_backfills_timezone(self):
-        shared_environment = {
-            self.runtime.OPENVIKING_PORT_ENV: "23456",
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-
-        with mock.patch.dict(os.environ, {self.runtime.TIMEZONE_ENV: "Europe/Rome"}, clear=False), mock.patch.object(
-            self.runtime.agent, "set_env"
-        ) as set_env:
-            self.runtime.ensure_shared_openviking_settings(shared_environment, shared_secrets)
-
-        self.assertEqual(shared_environment[self.runtime.TIMEZONE_ENV], "Europe/Rome")
-        set_env.assert_called_once_with(self.runtime.TIMEZONE_ENV, "Europe/Rome")
-
-    def test_ensure_shared_openviking_settings_normalizes_blank_timezone(self):
-        shared_environment = {
-            self.runtime.OPENVIKING_PORT_ENV: "23456",
-            self.runtime.HERMES_SYSTEM_API_PORT_ENV: str(self.runtime.HERMES_API_SERVER_PORT),
-        }
-        shared_secrets = {
-            self.runtime.OPENVIKING_ROOT_API_KEY_ENV: "root-key",
-        }
-
-        with mock.patch.dict(os.environ, {self.runtime.TIMEZONE_ENV: "   "}, clear=False), mock.patch.object(
-            self.runtime.agent, "set_env"
-        ) as set_env:
-            self.runtime.ensure_shared_openviking_settings(shared_environment, shared_secrets)
-
-        self.assertEqual(shared_environment[self.runtime.TIMEZONE_ENV], "UTC")
-        set_env.assert_called_once_with(self.runtime.TIMEZONE_ENV, "UTC")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_sync_agent_runtime_files_requires_existing_agent(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            with self.assertRaisesRegex(ValueError, "agent 99 not found"):
+                self.sync.sync_agent_runtime_files(agent_id=99)

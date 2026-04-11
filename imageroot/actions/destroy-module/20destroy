@@ -1,30 +1,27 @@
 #!/usr/bin/env python3
 
-#
-# Copyright (C) 2023 Nethesis S.r.l.
-# SPDX-License-Identifier: GPL-3.0-or-later
-#
-
 import json
+import shutil
+import subprocess
 import sys
-import importlib.util
 from pathlib import Path
 
-runtime_path = Path(__file__).resolve().parents[2] / "pypkg" / "hermes_agent_runtime.py"
-runtime_spec = importlib.util.spec_from_file_location("hermes_agent_runtime", runtime_path)
-assert runtime_spec is not None and runtime_spec.loader is not None
-runtime_module = importlib.util.module_from_spec(runtime_spec)
-runtime_spec.loader.exec_module(runtime_module)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
+
+from hermes_agent_state import AGENTS_DIR, container_name, list_known_agent_ids, remove_agent_state, service_unit
+
+
+def run(command, check=True):
+    subprocess.run(command, check=check)
+
 
 
 json.load(sys.stdin)
 
-agent_ids = set(runtime_module.list_known_agent_ids())
+for agent_id in list_known_agent_ids():
+    run(["systemctl", "--user", "disable", "--now", service_unit(agent_id)], check=False)
+    run(["podman", "rm", "--force", container_name(agent_id)], check=False)
+    remove_agent_state(agent_id)
 
-for agent_data in runtime_module.read_agents_from_state():
-    agent_ids.add(agent_data["id"])
-
-for agent_id in sorted(agent_ids):
-    runtime_module.cleanup_agent_runtime(agent_id)
-
-runtime_module.cleanup_shared_openviking_runtime()
+if AGENTS_DIR.exists():
+    shutil.rmtree(AGENTS_DIR, ignore_errors=True)
