@@ -57,7 +57,7 @@ This document maps the current layout.
 
 ## `containers/`
 
-- `containers/hermes/Containerfile`: Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:0.0.9`.
+- `containers/hermes/Containerfile`: Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:latest`.
 - `containers/hermes/entrypoint.sh`: starts the Hermes gateway, Hermes dashboard, and local dashboard proxy inside the single runtime container.
 - `containers/hermes/hermes-dashboard-proxy.py`: rewrites path-prefixed Hermes dashboard traffic for Traefik routes.
 

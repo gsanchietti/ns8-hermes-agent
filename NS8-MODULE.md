@@ -24,7 +24,7 @@ The implementation keeps the module lifecycle explicit:
 The module publishes:
 
 - `ghcr.io/nethserver/hermes-agent`: the NS8 module image
-- `ghcr.io/nethserver/hermes-agent-hermes`: the Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:0.0.9`
+- `ghcr.io/nethserver/hermes-agent-hermes`: the Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:latest`
 
 `build-images.sh` builds only these two images.
 
