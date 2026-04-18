@@ -11,13 +11,25 @@
     ],
     "properties": {
         "base_virtualhost": {
-            "type": "string",
             "description": "Base virtualhost for agent dashboards. When set, every agent gets a Traefik route at https://<host>/hermes-agent-N/ that forwards to its dedicated Hermes web dashboard. Must be a valid fully qualified domain name or left empty to disable shared dashboard hosting.",
-            "format": "hostname",
-            "pattern": "\\.",
-            "not": {
-                "format": "ipv4"
-            }
+            "anyOf": [
+                {
+                    "type": "string",
+                    "maxLength": 0
+                },
+                {
+                    "type": "string",
+                    "format": "hostname",
+                    "pattern": "\\.",
+                    "not": {
+                        "format": "ipv4"
+                    }
+                }
+            ]
+        },
+        "lets_encrypt": {
+            "type": "boolean",
+            "description": "Request a Let's Encrypt certificate for the shared dashboard virtualhost when routes are published through Traefik."
         },
         "agents": {
             "type": "array",

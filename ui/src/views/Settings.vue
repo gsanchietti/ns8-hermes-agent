@@ -66,6 +66,46 @@
                   <p class="section-description">
                     {{ $t("settings.base_virtualhost_description") }}
                   </p>
+                  <NsToggle
+                    value="letsEncrypt"
+                    :label="$t('settings.request_le_certificates')"
+                    v-model="letsEncrypt"
+                    :disabled="
+                      loading.getConfiguration || loading.configureModule
+                    "
+                  >
+                    <template #tooltip>
+                      <div class="mg-bottom-sm">
+                        {{ $t("settings.request_le_certificates_tooltip") }}
+                      </div>
+                      <div class="mg-bottom-sm">
+                        <cv-link @click="goToCertificates">
+                          {{
+                            core.$t("apps_lets_encrypt.go_to_tls_certificates")
+                          }}
+                        </cv-link>
+                      </div>
+                    </template>
+                    <template slot="text-left">{{
+                      core.$t("common.disabled")
+                    }}</template>
+                    <template slot="text-right">{{
+                      core.$t("common.enabled")
+                    }}</template>
+                  </NsToggle>
+                  <NsInlineNotification
+                    v-if="isLetsEncryptCurrentlyEnabled && !letsEncrypt"
+                    kind="warning"
+                    :title="
+                      core.$t('apps_lets_encrypt.lets_encrypt_disabled_warning')
+                    "
+                    :description="
+                      $t(
+                        'settings.request_le_certificates_disabled_warning_description'
+                      )
+                    "
+                    :showCloseButton="false"
+                  />
                 </cv-column>
               </cv-row>
               <cv-row>
@@ -386,6 +426,8 @@ export default {
       },
       urlCheckInterval: null,
       baseVirtualhost: "",
+      letsEncrypt: false,
+      isLetsEncryptCurrentlyEnabled: false,
       roles: [
         "default",
         "developer",
@@ -506,6 +548,8 @@ export default {
       this.baseVirtualhost = this.normalizeBaseVirtualhost(
         config.base_virtualhost || ""
       );
+      this.letsEncrypt = !!config.lets_encrypt;
+      this.isLetsEncryptCurrentlyEnabled = !!config.lets_encrypt;
       this.agents = this.normalizeAgents(config.agents || []);
     },
     configureModuleValidationFailed(validationErrors) {
@@ -603,6 +647,7 @@ export default {
           action: taskAction,
           data: {
             base_virtualhost: this.normalizeBaseVirtualhost(),
+            lets_encrypt: this.letsEncrypt,
             agents: this.buildAgentPayload(this.submittedAgents),
           },
           extra: {
@@ -949,6 +994,9 @@ export default {
       }
 
       this.getConfiguration();
+    },
+    goToCertificates() {
+      this.core.$router.push("/settings/tls-certificates");
     },
   },
 };

@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pypkg"))
+
+from hermes_agent_state import (
+    MAX_AGENTS,
+    agent_dir,
+    agent_envfile,
+    agent_secrets_envfile,
+    volume_name,
+)
+
+
+def parse_agent_id(value):
+    agent_id = int(value)
+    if 1 <= agent_id <= MAX_AGENTS:
+        return agent_id
+    raise argparse.ArgumentTypeError(f"agent id must be between 1 and {MAX_AGENTS}")
+
+
+def ensure_volume_removed(agent_id):
+    exists_result = subprocess.run(
+        ["podman", "volume", "exists", volume_name(agent_id)],
+        check=False,
+    )
+    if exists_result.returncode == 0:
+        subprocess.run(["podman", "volume", "rm", "--force", volume_name(agent_id)], check=True)
+        return
+    if exists_result.returncode == 1:
+        return
+    raise RuntimeError(f"failed to inspect volume {volume_name(agent_id)}")
+
+
+def remove_agent_state(agent_id):
+    ensure_volume_removed(agent_id)
+
+    for path in (agent_envfile(agent_id), agent_secrets_envfile(agent_id)):
+        if path.exists():
+            path.unlink()
+
+    if agent_dir(agent_id).exists():
+        shutil.rmtree(agent_dir(agent_id), ignore_errors=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Remove generated state for one Hermes agent")
+    parser.add_argument("--agent-id", type=parse_agent_id, required=True, help="Remove state for one agent")
+    args = parser.parse_args()
+
+    remove_agent_state(args.agent_id)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

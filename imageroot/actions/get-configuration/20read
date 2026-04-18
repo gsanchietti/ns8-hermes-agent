@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
 
-from hermes_agent_state import actual_agent_status, base_virtualhost_value, read_agents_from_state
+from hermes_agent_state import BASE_VIRTUALHOST_ENV, LETS_ENCRYPT_ENV, env_to_bool, read_agents_from_state
 
 
 
-agents = []
-for agent_data in read_agents_from_state():
-	agents.append(
-		{
-			**agent_data,
-			"runtime_status": actual_agent_status(agent_data["id"]),
-		}
-	)
-
-json.dump({"base_virtualhost": base_virtualhost_value(), "agents": agents}, fp=sys.stdout)
+json.dump(
+    {
+        "base_virtualhost": (os.getenv(BASE_VIRTUALHOST_ENV) or "").strip().lower(),
+        "lets_encrypt": env_to_bool(os.getenv(LETS_ENCRYPT_ENV)),
+        "agents": read_agents_from_state(),
+    },
+    fp=sys.stdout,
+)

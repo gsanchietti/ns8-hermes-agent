@@ -27,7 +27,6 @@ ExecStart=runagent /usr/bin/podman run \
 		--tz=${TIMEZONE} \
 		--network=slirp4netns:allow_host_loopback=true \
 		${HERMES_AGENT_HERMES_IMAGE}
-ExecStartPost=/usr/local/bin/runagent seed-agent-home --agent-id %i
 ExecStop=/usr/bin/podman stop --ignore --time 10 hermes-agent-%i
 ExecStopPost=-/usr/bin/podman rm --force hermes-agent-%i
 TimeoutStopSec=70

@@ -1,10 +1,7 @@
 import json
 import os
 import re
-import secrets
-import shutil
 import stat
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -13,7 +10,6 @@ ENVIRONMENT_FILE = Path("environment")
 SHARED_SECRETS_ENVFILE = Path("secrets.env")
 AGENTS_DIR = Path("agents")
 SOUL_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates" / "SOUL"
-HOME_ENV_TEMPLATE = Path(__file__).resolve().parents[1] / "templates" / "home.env.in"
 MAX_AGENTS = 30
 
 ALLOWED_ROLES = (
@@ -47,12 +43,22 @@ TCP_PORT_ENV = "TCP_PORT"
 TCP_PORTS_ENV = "TCP_PORTS"
 TCP_PORTS_RANGE_ENV = "TCP_PORTS_RANGE"
 BASE_VIRTUALHOST_ENV = "BASE_VIRTUALHOST"
+BASE_VIRTUALHOST_PREVIOUS_ENV = "_HERMES_BASE_VIRTUALHOST_PREVIOUS"
+LETS_ENCRYPT_ENV = "LETS_ENCRYPT"
+LETS_ENCRYPT_PREVIOUS_ENV = "_HERMES_LETS_ENCRYPT_PREVIOUS"
 AGENT_DASHBOARD_HOST_PORT_ENV = "AGENT_DASHBOARD_HOST_PORT"
 DASHBOARD_PORT = 9119
-HOME_VOLUME_STATE_FILE = ".hermes-agent-seed-state.json"
 BASE_VIRTUALHOST_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:(?!-)[A-Za-z0-9-]{1,63}(?<!-)\.)+(?!-)[A-Za-z0-9-]{1,63}(?<!-)$"
 )
+
+
+def env_to_bool(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def bool_to_env(value):
+    return "true" if value else "false"
 
 
 def soul_template_for_role(role):
@@ -121,36 +127,6 @@ def write_private_textfile(path, content, mode=0o600):
         raise
 
 
-def read_envfile(path):
-    env_data = {}
-    file_path = Path(path)
-    if not file_path.exists():
-        return env_data
-
-    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        if "=" not in raw_line:
-            continue
-
-        key, value = raw_line.split("=", 1)
-        env_data[key] = value
-
-    return env_data
-
-
-def write_envfile(path, env_data):
-    file_path = Path(path)
-
-    content = "\n".join(f"{key}={value}" for key, value in env_data.items())
-    if content:
-        content = f"{content}\n"
-
-    write_private_textfile(file_path, content)
-
-
 def read_jsonfile(path):
     file_path = Path(path)
     if not file_path.exists():
@@ -170,10 +146,6 @@ def agent_dir(agent_id):
 
 def agent_metadata_path(agent_id):
     return agent_dir(agent_id) / "metadata.json"
-
-
-def agent_seed_state_path(agent_id):
-    return agent_dir(agent_id) / HOME_VOLUME_STATE_FILE
 
 
 def agent_envfile(agent_id):
@@ -198,7 +170,7 @@ def volume_name(agent_id):
 
 def route_instance_name(agent_id, module_id=None, shared_environment=None):
     if shared_environment is None:
-        shared_environment = read_envfile(ENVIRONMENT_FILE)
+        shared_environment = os.environ
 
     module_value = module_id or shared_environment.get("MODULE_ID") or os.getenv("MODULE_ID")
     if not module_value:
@@ -209,32 +181,6 @@ def route_instance_name(agent_id, module_id=None, shared_environment=None):
 
 def route_path(agent_id):
     return f"/hermes-agent-{agent_id}"
-
-
-def timezone_value(shared_environment=None):
-    if shared_environment is None:
-        shared_environment = read_envfile(ENVIRONMENT_FILE)
-
-    value = (shared_environment.get(TIMEZONE_ENV) or TIMEZONE_DEFAULT).strip()
-    return value or TIMEZONE_DEFAULT
-
-
-def base_virtualhost_value(shared_environment=None):
-    if shared_environment is None:
-        shared_environment = read_envfile(ENVIRONMENT_FILE)
-
-    return (shared_environment.get(BASE_VIRTUALHOST_ENV) or "").strip().lower()
-
-
-def validate_base_virtualhost(value):
-    normalized_value = (value or "").strip().lower()
-    if not normalized_value:
-        return ""
-
-    if not BASE_VIRTUALHOST_PATTERN.fullmatch(normalized_value):
-        raise ValueError("invalid base_virtualhost")
-
-    return normalized_value
 
 
 def parse_tcp_ports_range(port_range):
@@ -266,7 +212,7 @@ def build_tcp_ports_environment(start_port, end_port, ports_demand):
 
 def ensure_tcp_ports_environment(shared_environment=None, ports_demand=MAX_AGENTS, allocate_ports=None):
     if shared_environment is None:
-        shared_environment = read_envfile(ENVIRONMENT_FILE)
+        shared_environment = os.environ
 
     try:
         start_port, end_port = parse_tcp_ports_range(shared_environment.get(TCP_PORTS_RANGE_ENV))
@@ -305,7 +251,7 @@ def agent_dashboard_host_port(agent_id, shared_environment=None):
         raise ValueError(f"agent id must be between 1 and {MAX_AGENTS}")
 
     if shared_environment is None:
-        shared_environment = read_envfile(ENVIRONMENT_FILE)
+        shared_environment = os.environ
 
     start_port, end_port = parse_tcp_ports_range(shared_environment.get(TCP_PORTS_RANGE_ENV))
     if end_port - start_port + 1 < MAX_AGENTS:
@@ -314,62 +260,41 @@ def agent_dashboard_host_port(agent_id, shared_environment=None):
     return start_port + agent_id - 1
 
 
-def validate_agents(raw_agents):
-    if raw_agents is None:
-        return []
-
-    if not isinstance(raw_agents, list):
-        raise ValueError("agents must be a list")
-
-    normalized_agents = []
-    seen_ids = set()
-    allowed_fields = {"id", "name", "role", "status"}
-
-    for index, raw_agent in enumerate(raw_agents):
-        if not isinstance(raw_agent, dict):
-            raise ValueError(f"agent at index {index} must be an object")
-
-        extra_fields = sorted(set(raw_agent) - allowed_fields)
+def read_agents_from_state():
+    def validate_agent_metadata(agent_data, index):
+        extra_fields = sorted(set(agent_data) - {"id", "name", "role", "status"})
         if extra_fields:
             raise ValueError(
                 f"agent at index {index} has unexpected fields: {', '.join(extra_fields)}"
             )
 
-        agent_id = raw_agent.get("id")
+        agent_id = agent_data.get("id")
         if not isinstance(agent_id, int) or agent_id < 1 or agent_id > MAX_AGENTS:
             raise ValueError(f"agent at index {index} has an invalid id")
-        if agent_id in seen_ids:
-            raise ValueError(f"agent id {agent_id} is duplicated")
 
-        raw_name = raw_agent.get("name")
+        raw_name = agent_data.get("name")
         if not isinstance(raw_name, str):
             raise ValueError(f"agent at index {index} has an invalid name")
+
         name = raw_name.strip()
         if not name or not NAME_PATTERN.fullmatch(name):
             raise ValueError(f"agent at index {index} has an invalid name")
 
-        role = raw_agent.get("role")
+        role = agent_data.get("role")
         if role not in ALLOWED_ROLES:
             raise ValueError(f"agent at index {index} has an invalid role")
 
-        status = raw_agent.get("status")
+        status = agent_data.get("status")
         if status not in ALLOWED_STATUSES:
             raise ValueError(f"agent at index {index} has an invalid status")
 
-        normalized_agents.append(
-            {
-                "id": agent_id,
-                "name": name,
-                "role": role,
-                "status": status,
-            }
-        )
-        seen_ids.add(agent_id)
+        return {
+            "id": agent_id,
+            "name": name,
+            "role": role,
+            "status": status,
+        }
 
-    return sorted(normalized_agents, key=lambda agent_data: agent_data["id"])
-
-
-def read_agents_from_state():
     agents = []
     if not AGENTS_DIR.exists():
         return agents
@@ -385,48 +310,28 @@ def read_agents_from_state():
         if metadata is None:
             continue
 
-        agents.append(metadata)
+        agents.append(validate_agent_metadata(metadata, len(agents)))
 
-    return validate_agents(agents)
+    return sorted(agents, key=lambda agent_data: agent_data["id"])
 
 
 def list_known_agent_ids():
     ids = set()
 
+    def record_agent_id(raw_agent_id):
+        agent_id = int(raw_agent_id)
+        if 1 <= agent_id <= MAX_AGENTS:
+            ids.add(agent_id)
+
     if AGENTS_DIR.exists():
         for path in AGENTS_DIR.iterdir():
             if path.is_dir() and AGENT_DIR_PATTERN.fullmatch(path.name):
-                ids.add(int(path.name))
+                record_agent_id(path.name)
 
     for path in Path(".").iterdir():
         for pattern in (AGENT_ENVFILE_PATTERN, AGENT_SECRETS_ENVFILE_PATTERN):
             match = pattern.fullmatch(path.name)
             if match:
-                ids.add(int(match.group(1)))
+                record_agent_id(match.group(1))
 
     return sorted(ids)
-
-
-def actual_agent_status(agent_id):
-    result = subprocess.run(
-        ["systemctl", "--user", "is-active", "--quiet", service_unit(agent_id)],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return "start" if result.returncode == 0 else "stop"
-
-
-def remove_agent_state(agent_id):
-    for path in (agent_envfile(agent_id), agent_secrets_envfile(agent_id)):
-        if path.exists():
-            path.unlink()
-
-    subprocess.run(["podman", "volume", "rm", "--force", volume_name(agent_id)], check=False)
-
-    if agent_dir(agent_id).exists():
-        shutil.rmtree(agent_dir(agent_id), ignore_errors=True)
-
-
-def generate_secret():
-    return secrets.token_hex(16)

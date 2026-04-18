@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import agent
+import agent.tasks
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
+
+from hermes_agent_state import (
+    BASE_VIRTUALHOST_ENV,
+    BASE_VIRTUALHOST_PREVIOUS_ENV,
+    LETS_ENCRYPT_ENV,
+    LETS_ENCRYPT_PREVIOUS_ENV,
+    env_to_bool,
+    list_known_agent_ids,
+    read_agents_from_state,
+    route_instance_name,
+    route_path,
+    agent_dashboard_host_port,
+)
+
+
+def delete_agent_route(agent_id, traefik_agent_id, lets_encrypt_cleanup=False):
+    route_request = {
+        "instance": route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
+    }
+    if lets_encrypt_cleanup:
+        route_request["lets_encrypt_cleanup"] = True
+    response = agent.tasks.run(
+        agent_id=traefik_agent_id,
+        action="delete-route",
+        data=route_request,
+    )
+    agent.assert_exp(response["exit_code"] == 0)
+
+
+def upsert_agent_route(agent_id, base_virtualhost, lets_encrypt, traefik_agent_id, lets_encrypt_cleanup=False):
+    path = route_path(agent_id)
+    route_request = {
+        "instance": route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
+        "url": f"http://127.0.0.1:{agent_dashboard_host_port(agent_id, os.environ)}",
+        "host": base_virtualhost,
+        "path": path,
+        "http2https": True,
+        "lets_encrypt": lets_encrypt,
+        "strip_prefix": True,
+        "headers": {
+            "request": {
+                "X-Forwarded-Prefix": path,
+            }
+        },
+    }
+    if lets_encrypt_cleanup:
+        route_request["lets_encrypt_cleanup"] = True
+    response = agent.tasks.run(
+        agent_id=traefik_agent_id,
+        action="set-route",
+        data=route_request,
+    )
+    agent.assert_exp(response["exit_code"] == 0)
+
+
+request = json.load(sys.stdin)
+
+known_ids = sorted(list_known_agent_ids())
+base_virtualhost = (os.getenv(BASE_VIRTUALHOST_ENV) or "").strip().lower()
+previous_base_virtualhost = (os.getenv(BASE_VIRTUALHOST_PREVIOUS_ENV) or "").strip().lower()
+requested_base_virtualhost = ((request.get("base_virtualhost") or "").strip().lower() if "base_virtualhost" in request else None)
+lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_ENV))
+previous_lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_PREVIOUS_ENV))
+
+if not known_ids:
+    sys.exit(0)
+
+if not base_virtualhost and requested_base_virtualhost is None and not previous_base_virtualhost:
+    sys.exit(0)
+
+traefik_agent_id = agent.resolve_agent_id("traefik@node")
+if traefik_agent_id is None:
+    if not base_virtualhost and not previous_base_virtualhost:
+        sys.exit(0)
+    raise ValueError("traefik@node route agent not found")
+
+host_changed = bool(previous_base_virtualhost) and previous_base_virtualhost != base_virtualhost
+cleanup_previous_host = host_changed and previous_lets_encrypt
+cleanup_disable_lets_encrypt = bool(base_virtualhost) and not host_changed and previous_lets_encrypt and not lets_encrypt
+cleanup_delete_all_routes = not base_virtualhost and (lets_encrypt or previous_lets_encrypt)
+
+if base_virtualhost:
+    desired_agents = read_agents_from_state()
+    if cleanup_previous_host and desired_agents:
+        delete_agent_route(desired_agents[0]["id"], traefik_agent_id, lets_encrypt_cleanup=True)
+    for index, agent_data in enumerate(desired_agents):
+        upsert_agent_route(
+            agent_data["id"],
+            base_virtualhost,
+            lets_encrypt,
+            traefik_agent_id,
+            lets_encrypt_cleanup=cleanup_disable_lets_encrypt and index == 0,
+        )
+else:
+    for index, agent_id in enumerate(known_ids):
+        delete_agent_route(
+            agent_id,
+            traefik_agent_id,
+            lets_encrypt_cleanup=cleanup_delete_all_routes and index == 0,
+        )

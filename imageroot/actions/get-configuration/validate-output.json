@@ -8,11 +8,15 @@
     "additionalProperties": false,
     "required": [
         "base_virtualhost",
+        "lets_encrypt",
         "agents"
     ],
     "properties": {
         "base_virtualhost": {
             "type": "string"
+        },
+        "lets_encrypt": {
+            "type": "boolean"
         },
         "agents": {
             "type": "array",
@@ -23,8 +27,7 @@
                     "id",
                     "name",
                     "role",
-                    "status",
-                    "runtime_status"
+                    "status"
                 ],
                 "properties": {
                     "id": {
@@ -51,13 +54,6 @@
                         ]
                     },
                     "status": {
-                        "type": "string",
-                        "enum": [
-                            "start",
-                            "stop"
-                        ]
-                    },
-                    "runtime_status": {
                         "type": "string",
                         "enum": [
                             "start",

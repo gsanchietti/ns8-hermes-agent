@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+
+import json
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
+
+from hermes_agent_state import AGENTS_DIR
+
+
+json.load(sys.stdin)
+
+if AGENTS_DIR.exists():
+    shutil.rmtree(AGENTS_DIR, ignore_errors=True)

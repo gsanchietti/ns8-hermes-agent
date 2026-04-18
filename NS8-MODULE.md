@@ -15,8 +15,9 @@ This document summarizes the current checked-in NS8 behavior for `ns8-hermes-age
 The implementation keeps the module lifecycle explicit:
 
 - `create-module`: initialize module state only
-- `configure-module`: validate agent input, persist one metadata file per agent, and reconcile routes and services
-- `get-configuration`: report the shared dashboard host plus configured agents, preserving desired status and exposing actual runtime state separately
+- `configure-module`: validate agent input, persist shared dashboard settings plus one metadata file per agent, seed first-time agent home content, and reconcile routes and services
+- `get-configuration`: report the shared dashboard host, shared `lets_encrypt` flag, and configured agents, preserving desired status only
+- `get-agent-runtime`: report live per-agent runtime state derived from systemd
 - `destroy-module`: stop services, remove managed routes, and remove generated state
 
 ## Images
@@ -37,6 +38,7 @@ The module image reserves 30 TCP ports and declares `traefik@node:routeadm node:
 ```json
 {
   "base_virtualhost": "agents.example.org",
+  "lets_encrypt": true,
   "agents": [
     {
       "id": 1,
@@ -51,6 +53,7 @@ The module image reserves 30 TCP ports and declares `traefik@node:routeadm node:
 Rules:
 
 - `base_virtualhost` is optional and must be a valid FQDN when present
+- `lets_encrypt` is optional and must be boolean when present
 - `id` must be an integer between `1` and `30`
 - `name` accepts letters and spaces only
 - `role` must match the shipped role list
@@ -63,20 +66,35 @@ Rules:
 ```json
 {
   "base_virtualhost": "agents.example.org",
+  "lets_encrypt": true,
   "agents": [
     {
       "id": 1,
       "name": "Foo Bar",
       "role": "developer",
-      "status": "start",
-      "runtime_status": "start"
+      "status": "start"
     }
   ]
 }
 ```
 
 `base_virtualhost` is the shared Traefik host for all agent Hermes dashboard routes.
+`lets_encrypt` controls whether Traefik should request a Let's Encrypt certificate for that shared host.
 `status` is the persisted desired state.
+
+`get-agent-runtime` returns:
+
+```json
+{
+  "agents": [
+    {
+      "id": 1,
+      "runtime_status": "start"
+    }
+  ]
+}
+```
+
 `runtime_status` is derived from `systemctl --user is-active hermes-agent@<id>.service`.
 
 ## State files
@@ -96,7 +114,6 @@ Per-agent Podman volume:
 
 - `hermes-agent-<id>-home`, mounted at `/opt/data`
 - managed files inside the volume: `SOUL.md` and `.env`
-- internal seeding state file inside the volume: `.hermes-agent-seed-state.json`
 
 Shared SMTP values come from `discover-smarthost`:
 
@@ -120,7 +137,7 @@ For agent `1`, the runtime looks like:
 
 Restart supervision is owned by `hermes-agent@<id>.service` with `Restart=on-failure`; the Podman container launches do not set container-level restart policies.
 The service creates one Podman-managed volume per agent and mounts it with `--userns=keep-id`.
-Managed `SOUL.md` and the default Hermes home `.env` are seeded in `ExecStartPost` after the volume exists. If seeding changes managed files, the runtime requests one follow-up restart so Hermes starts again with the seeded content already present.
+Managed `SOUL.md` and the default Hermes home `.env` are seeded in `configure-module/75seed-agent-home` before `hermes-agent@<id>.service` starts. Later configure runs preserve existing files inside the volume.
 The single Hermes container serves both `hermes gateway run` and the Hermes web dashboard.
 If `base_virtualhost` is set, Traefik forwards `https://<base_virtualhost>/hermes-agent-N/` to the dashboard listener selected from the module-owned 30-port pool.
 
@@ -131,40 +148,48 @@ The runtime manages two files inside each agent volume:
 - `SOUL.md`, from `imageroot/templates/SOUL/<role>.md.in`
 - `.env`, from `imageroot/templates/home.env.in`
 
-Placeholder replacement is performed in Python by `seed-agent-home` through `hermes_agent_home_seed.py` after the volume mountpoint exists.
-If a seeded `SOUL.md` or `.env` still matches the previously generated content, it is refreshed when the agent name or role changes; customized files are preserved.
-The managed seed state is tracked under the agent state directory and mirrored into the volume as `.hermes-agent-seed-state.json` so later refreshes can recover if one copy is removed.
+Placeholder replacement is performed inside the one-shot `configure-module/75seed-agent-home` container by mounting the checked-in templates at `/templates` and the per-agent volume at `/opt/data`.
+The seed step consumes only the generated public `agent_<id>.env` file plus `AGENT_ID`, `AGENT_NAME`, and `AGENT_ROLE` substitutions.
+Seeding is strict first-write only: later agent edits preserve existing `SOUL.md` and `.env` content in the volume.
 
 ## Action flow
 
 ### `create-module`
 
 - loads JSON input and ignores its content
-- persists `TIMEZONE`
-- creates `agents/` and `secrets.env`
-- runs `discover-smarthost`
+- `10initialize-state`: persists `TIMEZONE` and creates `agents/` plus `secrets.env`
+- `20discover-smarthost`: refreshes shared SMTP settings
 - does not create or start any agent runtime
 - relies on the module image label to reserve 30 TCP ports for later per-agent dashboard publishing
 
 ### `configure-module`
 
-- validates the submitted agent list
-- validates and persists `base_virtualhost` when present
-- writes one `metadata.json` file per agent
-- removes deleted agents and their managed Traefik routes
-- runs `discover-smarthost`
-- runs `sync-agent-runtime`
-- creates or updates one Traefik route per configured agent when `base_virtualhost` is set so it reaches the Hermes dashboard, or deletes managed routes when it is cleared
-- reloads the user systemd manager
-- enables and starts `hermes-agent@<id>.service` only for agents with `status: start`
-- disables and stops services for agents with `status: stop`
+- `10validate-input`: validates the submitted agent list, optional shared virtualhost, and optional shared `lets_encrypt`
+- `20persist-shared-env`: persists `base_virtualhost` plus `lets_encrypt`, tracks previous values for route cleanup, and backfills `TIMEZONE` when missing
+- `30remove-deleted-routes`: deletes managed Traefik routes for removed agents when routing is active, including one-time certificate cleanup when all routes are removed
+- `40remove-deleted-agents`: stops removed services, removes removed containers, and delegates generated-state cleanup to `remove-agent-state`
+- `50write-agent-metadata`: writes one `metadata.json` file per desired agent
+- `60refresh-shared-settings`: runs `discover-smarthost`
+- `70sync-agent-runtime`: runs `sync-agent-runtime`
+- `75seed-agent-home`: runs a one-shot Hermes container to seed first-time `/opt/data/SOUL.md` and `/opt/data/.env` content from checked-in templates
+- `80reload-systemd`: reloads the user systemd manager
+- `90reconcile-desired-routes`: creates, updates, or clears one Traefik route per desired agent when `base_virtualhost` is configured or explicitly changed, including `lets_encrypt` cleanup for host changes or shared TLS disable events
+- `95reconcile-agent-services`: enables and starts `hermes-agent@<id>.service` for desired `start` agents and disables or stops the rest
+
+### `get-configuration`
+
+- `20read`: returns the shared `base_virtualhost` plus the configured agents with desired persisted status only
+
+### `get-agent-runtime`
+
+- `10read`: inspects `systemctl --user is-active hermes-agent@<id>.service` for each configured agent and returns live `runtime_status`
 
 ### `destroy-module`
 
-- disables and stops every known `hermes-agent@<id>.service`
-- removes every managed Traefik route
-- removes every `hermes-agent-<id>` container if present
-- removes generated per-agent env files, per-agent state directories, and per-agent Hermes home volumes
+- `10remove-routes`: removes every managed Traefik route, including one-time certificate cleanup when shared `lets_encrypt` is enabled
+- `20stop-services`: disables and stops every known `hermes-agent@<id>.service` and removes every `hermes-agent-<id>` container if present
+- `30remove-agent-state`: delegates generated-state cleanup for each known agent to `remove-agent-state`
+- `40remove-agents-root`: removes the top-level `agents/` directory
 
 ### `update-module`
 

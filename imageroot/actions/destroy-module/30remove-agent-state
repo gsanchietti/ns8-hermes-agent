@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
+
+from hermes_agent_state import list_known_agent_ids
+
+
+json.load(sys.stdin)
+
+for agent_id in list_known_agent_ids():
+    subprocess.run(["runagent", "remove-agent-state", "--agent-id", str(agent_id)], check=True)

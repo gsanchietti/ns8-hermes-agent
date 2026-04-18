@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import agent
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
+
+from hermes_agent_state import AGENTS_DIR, SHARED_SECRETS_ENVFILE, ensure_private_directory
+
+
+def ensure_private_file(path):
+    file_path = Path(path)
+
+    try:
+        file_stat = file_path.lstat()
+    except FileNotFoundError:
+        file_path.touch(mode=0o600)
+    else:
+        if file_path.is_symlink() or not file_path.is_file():
+            raise ValueError(f"unsafe file path: {file_path}")
+
+    os.chmod(file_path, 0o600)
+
+
+json.load(sys.stdin)
+
+timezone = (os.getenv("TIMEZONE") or "UTC").strip() or "UTC"
+
+agent.set_env("TIMEZONE", timezone)
+
+ensure_private_directory(AGENTS_DIR)
+ensure_private_file(SHARED_SECRETS_ENVFILE)

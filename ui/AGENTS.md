@@ -1,7 +1,7 @@
 # ui Guidelines
 
 - This subtree is the embedded NS8 admin UI. Preserve the current stack unless the task is a frontend migration: Vue 2, Vue CLI, Vue Router, Vuex, Carbon, and `@nethserver/ns8-ui-lib`.
-- The settings page is now agent-focused plus shared dashboard publishing. Keep it focused on one shared `base_virtualhost` field plus listing agents, creating and editing agents, deleting agents, and toggling start or stop state.
-- The backend payload for `configure-module` is `{ "base_virtualhost": "", "agents": [...] }`. There are no hidden fields, shared gateway flags, or OpenViking settings to preserve.
-- `get-configuration` returns `{ "base_virtualhost": "", "agents": [...] }`, where `status` is the desired persisted state and `runtime_status` is the current systemd runtime state. Round-trip `base_virtualhost` plus the desired `status` back to `configure-module`.
+- The settings page is now agent-focused plus shared dashboard publishing. Keep it focused on the shared `base_virtualhost` field, the shared `lets_encrypt` toggle, listing agents, creating and editing agents, deleting agents, and toggling start or stop state.
+- The backend payload for `configure-module` is `{ "base_virtualhost": "", "lets_encrypt": false, "agents": [...] }`. There are no hidden fields, shared gateway flags, or OpenViking settings to preserve.
+- `get-configuration` returns `{ "base_virtualhost": "", "lets_encrypt": false, "agents": [...] }`, where `status` is the desired persisted state. `Settings.vue` currently round-trips `base_virtualhost`, `lets_encrypt`, and the desired `status` back to `configure-module`. Live service state is available separately from `get-agent-runtime`, which returns `{ "agents": [{ "id": 1, "runtime_status": "start" }] }`, for views that explicitly need runtime drift or failed-start visibility.
 - When user-facing text changes, update `public/metadata.json` and the translation files together.

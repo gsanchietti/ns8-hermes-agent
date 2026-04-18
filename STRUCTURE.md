@@ -22,18 +22,34 @@ This document maps the current layout.
 
 ### `imageroot/actions/`
 
-- `create-module/20create`: initializes `TIMEZONE`, creates base state files and directories, and discovers smarthost settings.
-- `configure-module/20configure`: validates the submitted `base_virtualhost` and agent list, stores one metadata file per agent, synchronizes runtime files, reconciles managed Traefik routes, and reconciles per-agent services.
-- `configure-module/validate-input.json`: input schema for the shared `base_virtualhost` plus the Hermes `agents` payload.
-- `get-configuration/20read`: returns the shared dashboard virtualhost plus configured agents with actual runtime status from systemd.
-- `get-configuration/validate-output.json`: output schema for the shared dashboard virtualhost plus the Hermes `agents` response.
-- `destroy-module/20destroy`: stops services, removes containers, deletes managed routes, and deletes generated per-agent files plus per-agent Hermes home volumes.
+- `create-module/10initialize-state`: initializes `TIMEZONE` and creates the base state directory and shared secrets file.
+- `create-module/20discover-smarthost`: refreshes shared SMTP settings after initialization.
+- `configure-module/10validate-input`: validates the submitted `base_virtualhost`, optional shared `lets_encrypt`, and agent list.
+- `configure-module/20persist-shared-env`: persists the shared virtualhost plus `lets_encrypt`, tracks previous values for route cleanup, and backfills `TIMEZONE`.
+- `configure-module/30remove-deleted-routes`: removes managed Traefik routes for removed agents when routing is active, including one-time certificate cleanup when the last managed route disappears.
+- `configure-module/40remove-deleted-agents`: stops removed services, removes removed containers, and delegates generated-state cleanup.
+- `configure-module/50write-agent-metadata`: stores one metadata file per desired agent.
+- `configure-module/60refresh-shared-settings`: refreshes shared SMTP settings via `discover-smarthost`.
+- `configure-module/70sync-agent-runtime`: regenerates `agent_<id>.env` and `agent_<id>_secrets.env`.
+- `configure-module/75seed-agent-home`: runs a one-shot Hermes container to seed strict first-write-only `/opt/data/SOUL.md` and `/opt/data/.env` content from checked-in templates.
+- `configure-module/80reload-systemd`: reloads the user systemd manager.
+- `configure-module/90reconcile-desired-routes`: creates, updates, or deletes per-agent Traefik routes for the desired configuration, including `lets_encrypt` cleanup when the shared host or TLS mode changes.
+- `configure-module/95reconcile-agent-services`: enables, starts, stops, or disables per-agent services to match desired state.
+- `configure-module/validate-input.json`: input schema for the shared `base_virtualhost`, `lets_encrypt`, and the Hermes `agents` payload.
+- `get-configuration/20read`: returns the shared dashboard virtualhost, shared `lets_encrypt` setting, and configured agents with desired persisted status.
+- `get-configuration/validate-output.json`: output schema for the shared dashboard virtualhost, shared `lets_encrypt` flag, and the Hermes `agents` response.
+- `get-agent-runtime/10read`: returns live per-agent runtime status derived from systemd.
+- `get-agent-runtime/validate-output.json`: output schema for the live runtime status response.
+- `destroy-module/10remove-routes`: removes managed Traefik routes for all known agents, including shared certificate cleanup when `lets_encrypt` is enabled.
+- `destroy-module/20stop-services`: stops known services and removes known containers.
+- `destroy-module/30remove-agent-state`: delegates generated file, directory, and volume cleanup for each known agent.
+- `destroy-module/40remove-agents-root`: removes the top-level `agents/` directory.
 
 ### `imageroot/bin/`
 
 - `discover-smarthost`: reads cluster smarthost settings and writes public values into `environment` and `SMTP_PASSWORD` into `secrets.env`.
+- `remove-agent-state`: removes generated per-agent env files, agent state directories, and the per-agent Hermes home volume.
 - `sync-agent-runtime`: writes `agent_<id>.env` and `agent_<id>_secrets.env` for each configured agent.
-- `seed-agent-home`: seeds managed `SOUL.md` and home `.env` content into a per-agent Hermes volume after the container starts, preserving customized files, maintaining managed seed state under `agents/<id>/`, mirroring that state into the volume, and scheduling a restart only when managed content changed.
 
 ### `imageroot/events/`
 
@@ -41,8 +57,7 @@ This document maps the current layout.
 
 ### `imageroot/pypkg/`
 
-- `hermes_agent_state.py`: small shared helper for validation, env/json file handling, path naming, named-volume naming, and service-state checks.
-- `hermes_agent_home_seed.py`: shared managed-home seeding logic for `SOUL.md` and the default Hermes home `.env`.
+- `hermes_agent_state.py`: small shared helper for metadata validation, env/json file handling, path naming, TCP port derivation, and named-volume naming.
 
 ### `imageroot/update-module.d/`
 
@@ -70,11 +85,12 @@ The embedded admin UI uses Vue 2 and Vue CLI.
 - `public/i18n/`: translation files.
 - `src/router/index.js`: routes for status, settings, and about.
 - `src/store/index.js`: embedded module context store.
-- `src/views/Settings.vue`: shared dashboard virtualhost configuration plus the agent list, create/edit/delete modals, and start/stop state management.
+- `src/views/Settings.vue`: shared dashboard virtualhost plus `lets_encrypt` configuration, the agent list, create/edit/delete modals, and start/stop state management.
 
 ## `tests/`
 
 - `__init__.robot`: Robot Framework initialization file.
 - `kickstart.robot`: end-to-end module lifecycle checks.
 - `pythonreq.txt`: Python dependencies for the test runner.
-- `test_runtime_validation.py`: focused unit tests for state helpers, route wiring, named-volume lifecycle, managed home seeding, and the single-container runtime contract.
+- `test_dashboard_proxy.py`: focused tests for dashboard path and proxy wiring.
+- `test_runtime_validation.py`: focused unit tests for state helpers, configure-time seeding, route wiring, named-volume lifecycle, and the single-container runtime contract.

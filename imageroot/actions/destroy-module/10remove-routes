@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import agent
+import agent.tasks
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
+
+from hermes_agent_state import LETS_ENCRYPT_ENV, env_to_bool, list_known_agent_ids, route_instance_name
+
+
+json.load(sys.stdin)
+
+traefik_agent_id = agent.resolve_agent_id("traefik@node")
+if traefik_agent_id is None:
+    sys.exit(0)
+
+known_agent_ids = list_known_agent_ids()
+cleanup_lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_ENV))
+
+for index, agent_id in enumerate(known_agent_ids):
+    route_request = {"instance": route_instance_name(agent_id, module_id=os.environ.get("MODULE_ID"))}
+    if cleanup_lets_encrypt and index == 0:
+        route_request["lets_encrypt_cleanup"] = True
+    response = agent.tasks.run(
+        agent_id=traefik_agent_id,
+        action="delete-route",
+        data=route_request,
+    )
+    agent.assert_exp(response["exit_code"] == 0)
