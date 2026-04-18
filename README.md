@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="image" src="https://github.com/Stell0/ns8-hermes-agent/blob/main/logo.png" />
+</p>
+
 <img width="1397" height="761" alt="image" src="https://github.com/user-attachments/assets/631c598a-9553-4a21-8ff5-f002568f0bbe" />
 
 # ns8-hermes-agent
