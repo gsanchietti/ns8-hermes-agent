@@ -35,6 +35,13 @@ def generate_secret():
     return secrets.token_hex(16)
 
 
+def read_optional_envfile(path):
+    if not os.path.exists(path):
+        return {}
+
+    return agent.read_envfile(path)
+
+
 def agent_by_id(agent_id):
     for agent_data in read_agents_from_state():
         if agent_data["id"] == agent_id:
@@ -84,7 +91,7 @@ def sync_agent_runtime_files(agent_id=None):
 
     for agent_data in agent_data_list:
         agent.write_envfile(agent_envfile(agent_data["id"]), build_agent_public_env(agent_data, shared_environment))
-        existing_agent_secrets = agent.read_envfile(agent_secrets_envfile(agent_data["id"]))
+        existing_agent_secrets = read_optional_envfile(agent_secrets_envfile(agent_data["id"]))
         agent_secrets = build_agent_secrets(existing_agent_secrets, shared_secrets)
         agent.write_envfile(
             agent_secrets_envfile(agent_data["id"]),

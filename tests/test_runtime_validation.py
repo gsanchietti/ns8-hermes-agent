@@ -75,6 +75,14 @@ def read_envfile(path):
     return env_data
 
 
+def strict_read_envfile(path):
+    file_path = Path(path)
+    with file_path.open("r", encoding="utf-8"):
+        pass
+
+    return read_envfile(file_path)
+
+
 def action_steps(action_dir):
     return sorted(
         path
@@ -426,6 +434,77 @@ class HermesModuleStateTest(unittest.TestCase):
                 ["agent_1.env", "agent_1_secrets.env"],
             )
             self.assertFalse((self.state.agent_dir(1) / "home").exists())
+
+    def test_sync_agent_runtime_files_creates_missing_agent_secrets_envfile(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(1),
+                {"id": 1, "name": "Alice User", "role": "developer", "status": "start"},
+            )
+            write_envfile(
+                self.state.ENVIRONMENT_FILE,
+                {
+                    "TIMEZONE": "UTC",
+                    "TCP_PORTS_RANGE": "20001-20030",
+                    "SMTP_HOST": "smtp.example.org",
+                },
+            )
+            write_envfile(self.state.SHARED_SECRETS_ENVFILE, {"SMTP_PASSWORD": "secret-pass"})
+
+            with mock.patch.object(
+                self.sync.agent,
+                "read_envfile",
+                side_effect=strict_read_envfile,
+                create=True,
+            ), mock.patch.object(
+                self.sync.agent,
+                "write_envfile",
+                side_effect=write_envfile,
+                create=True,
+            ):
+                self.sync.sync_agent_runtime_files(agent_id=1)
+
+            public_env = read_envfile(self.state.agent_envfile(1))
+            agent_secrets = read_envfile(self.state.agent_secrets_envfile(1))
+
+            self.assertEqual(public_env["AGENT_NAME"], "Alice User")
+            self.assertEqual(public_env["AGENT_DASHBOARD_HOST_PORT"], "20001")
+            self.assertEqual(agent_secrets["SMTP_PASSWORD"], "secret-pass")
+            self.assertTrue(agent_secrets["HERMES_AGENT_SECRET"])
+
+    def test_sync_agent_runtime_files_preserves_generated_agent_secret_on_rerun(self):
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                self.state.agent_metadata_path(3),
+                {"id": 3, "name": "Carol Agent", "role": "researcher", "status": "start"},
+            )
+            write_envfile(
+                self.state.ENVIRONMENT_FILE,
+                {"TIMEZONE": "UTC", "TCP_PORTS_RANGE": "20001-20030"},
+            )
+            write_envfile(self.state.SHARED_SECRETS_ENVFILE, {"SMTP_PASSWORD": "old-pass"})
+
+            with mock.patch.object(
+                self.sync.agent,
+                "read_envfile",
+                side_effect=strict_read_envfile,
+                create=True,
+            ), mock.patch.object(
+                self.sync.agent,
+                "write_envfile",
+                side_effect=write_envfile,
+                create=True,
+            ):
+                self.sync.sync_agent_runtime_files(agent_id=3)
+                first_sync_secrets = read_envfile(self.state.agent_secrets_envfile(3))
+
+                write_envfile(self.state.SHARED_SECRETS_ENVFILE, {"SMTP_PASSWORD": "new-pass"})
+                self.sync.sync_agent_runtime_files(agent_id=3)
+
+            agent_secrets = read_envfile(self.state.agent_secrets_envfile(3))
+            self.assertEqual(agent_secrets["HERMES_AGENT_SECRET"], first_sync_secrets["HERMES_AGENT_SECRET"])
+            self.assertEqual(agent_secrets["SMTP_PASSWORD"], "new-pass")
+            self.assertEqual(set(agent_secrets), {"HERMES_AGENT_SECRET", "SMTP_PASSWORD"})
 
     def test_seed_agent_home_action_uses_public_envfile_and_templates_mount(self):
         with mock.patch("sys.stdin", io.StringIO("{}")):
