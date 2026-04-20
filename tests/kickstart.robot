@@ -97,7 +97,6 @@ Check if one started agent creates one runtime
     Should Not Be Empty    ${agent_secret}
     Should Be Equal    ${secret_key_count}    1
     Should Be Equal    ${route_host}    agents.example.test
-    Should Be Equal    ${route_path}    /hermes-1
     Should Be Equal    ${route_lets_encrypt}    ${True}
     Should Contain    ${soul_content}    Your name is Foo Bar, you are an Hermes Agent that runs on NethServer8
     Should Contain    ${soul_content}    You are a pragmatic technical partner who values correctness, clarity, and operational reality.

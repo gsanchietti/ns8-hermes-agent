@@ -5,7 +5,6 @@ set -e
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
-# --- Running as hermes from here ---
 source "${INSTALL_DIR}/.venv/bin/activate"
 
 # Create essential directory structure.  Cache and platform directories
@@ -35,6 +34,11 @@ fi
 # Sync bundled skills (manifest-based so user edits are preserved)
 if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
+fi
+
+if [ ! -z "$BASE_URL" ]; then
+    sed -i 's#<BrowserRouter>#<BrowserRouter basename="/'"$BASE_URL"'">#' /opt/hermes/web/src/main.tsx
+    sed -i '/export default defineConfig({/a\  base: "/'"$BASE_URL"'/",' /opt/hermes/web/vite.config.ts
 fi
 
 exec hermes "$@"
