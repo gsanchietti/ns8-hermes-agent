@@ -22,10 +22,9 @@ ExecStart=runagent /usr/bin/podman run \
 		--sdnotify=conmon \
 		--cgroups=no-conmon \
 		--pod hermes-pod-%i \
-		--userns=keep-id \
 		--env-file %S/state/agent_%i.env \
 		--env GATEWAY_HEALTH_URL=http://127.0.0.1:8642 \
-		--volume hermes-agent-%i-home:/opt/data:Z,ro \
+		--volume hermes-agent-%i-home:/opt/data:ro,z \
 		--tz=${TIMEZONE} \
 		${HERMES_AGENT_HERMES_IMAGE} \
 		dashboard --host 0.0.0.0

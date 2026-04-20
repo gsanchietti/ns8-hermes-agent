@@ -24,12 +24,11 @@ ExecStart=runagent /usr/bin/podman run \
 		--sdnotify=conmon \
 		--cgroups=no-conmon \
 		--pod hermes-pod-%i \
-		--userns=keep-id \
 		--env-file %S/state/agent_%i.env \
 		--env-file %S/state/agent_%i_secrets.env \
 		--env API_SERVER_ENABLED=true \
 		--env API_SERVER_HOST=127.0.0.1 \
-		--volume hermes-agent-%i-home:/opt/data:Z \
+		--volume hermes-agent-%i-home:/opt/data:z \
 		--tz=${TIMEZONE} \
 		${HERMES_AGENT_HERMES_IMAGE} \
 		gateway run
