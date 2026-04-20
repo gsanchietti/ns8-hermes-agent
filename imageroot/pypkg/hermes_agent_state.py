@@ -140,58 +140,6 @@ def write_jsonfile(path, data):
     write_private_textfile(file_path, f"{json.dumps(data, indent=2)}\n")
 
 
-def agent_dir(agent_id):
-    return AGENTS_DIR / str(agent_id)
-
-
-def agent_metadata_path(agent_id):
-    return agent_dir(agent_id) / "metadata.json"
-
-
-def agent_envfile(agent_id):
-    return Path(f"agent_{agent_id}.env")
-
-
-def agent_secrets_envfile(agent_id):
-    return Path(f"agent_{agent_id}_secrets.env")
-
-
-def service_unit(agent_id):
-    return f"hermes@{agent_id}.service"
-
-
-def dashboard_service_unit(agent_id):
-    return f"hermes-dashboard@{agent_id}.service"
-
-
-def pod_service_unit(agent_id):
-    return f"hermes-pod@{agent_id}.service"
-
-
-def legacy_service_unit(agent_id):
-    return f"hermes-agent@{agent_id}.service"
-
-
-def container_name(agent_id):
-    return f"hermes-{agent_id}"
-
-
-def dashboard_container_name(agent_id):
-    return f"hermes-dashboard-{agent_id}"
-
-
-def pod_name(agent_id):
-    return f"hermes-pod-{agent_id}"
-
-
-def legacy_container_name(agent_id):
-    return f"hermes-agent-{agent_id}"
-
-
-def volume_name(agent_id):
-    return f"hermes-agent-{agent_id}-home"
-
-
 def route_instance_name(agent_id, module_id=None, shared_environment=None):
     if shared_environment is None:
         shared_environment = os.environ
@@ -201,11 +149,6 @@ def route_instance_name(agent_id, module_id=None, shared_environment=None):
         raise ValueError("MODULE_ID is required to derive route instance names")
 
     return f"{module_value}-hermes-agent-{agent_id}"
-
-
-def route_path(agent_id):
-    return f"/hermes-{agent_id}"
-
 
 def parse_tcp_ports_range(port_range):
     normalized_range = (port_range or "").strip()

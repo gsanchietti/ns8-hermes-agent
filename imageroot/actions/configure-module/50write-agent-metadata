@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
 
-from hermes_agent_state import AGENTS_DIR, agent_metadata_path, ensure_private_directory, write_jsonfile
+from hermes_agent_state import AGENTS_DIR, ensure_private_directory, write_jsonfile
 
 
 def normalize_agents(raw_agents):
@@ -30,4 +30,4 @@ request = json.load(sys.stdin)
 ensure_private_directory(AGENTS_DIR)
 
 for agent_data in normalize_agents(request.get("agents", [])):
-    write_jsonfile(agent_metadata_path(agent_data["id"]), agent_data)
+    write_jsonfile(AGENTS_DIR / str(agent_data["id"]) / "metadata.json", agent_data)

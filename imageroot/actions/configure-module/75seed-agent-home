@@ -8,8 +8,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
 
-from hermes_agent_state import agent_envfile, volume_name
-
 
 SEED_SCRIPT = r'''
 umask 077
@@ -76,7 +74,7 @@ def templates_dir():
 
 
 def public_env_file(agent_id):
-    path = (Path.cwd() / agent_envfile(agent_id)).resolve()
+    path = (Path.cwd() / f"agent_{agent_id}.env").resolve()
     if not path.is_file():
         raise ValueError(f"agent env file not found: {path}")
     return path
@@ -102,7 +100,7 @@ def seed_agent_home(agent_id, templates_path):
         "--env-file",
         str(public_env_file(agent_id)),
         "--volume",
-        f"{volume_name(agent_id)}:/opt/data:z",
+        f"hermes-agent-{agent_id}-home:/opt/data:z",
         "--volume",
         f"{templates_path}:/templates:ro,z",
         image,

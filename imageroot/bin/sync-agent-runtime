@@ -16,9 +16,7 @@ from hermes_agent_state import (
     BASE_VIRTUALHOST_ENV,
     SMTP_PUBLIC_KEYS,
     SMTP_SECRET_KEY,
-    agent_envfile,
     agent_dashboard_host_port,
-    agent_secrets_envfile,
     read_agents_from_state,
 )
 
@@ -90,11 +88,14 @@ def sync_agent_runtime_files(agent_id=None):
     agent_data_list = [agent_by_id(agent_id)] if agent_id is not None else read_agents_from_state()
 
     for agent_data in agent_data_list:
-        agent.write_envfile(agent_envfile(agent_data["id"]), build_agent_public_env(agent_data, shared_environment))
-        existing_agent_secrets = read_optional_envfile(agent_secrets_envfile(agent_data["id"]))
+        agent.write_envfile(
+            Path(f"agent_{agent_data['id']}.env"),
+            build_agent_public_env(agent_data, shared_environment),
+        )
+        existing_agent_secrets = read_optional_envfile(Path(f"agent_{agent_data['id']}_secrets.env"))
         agent_secrets = build_agent_secrets(existing_agent_secrets, shared_secrets)
         agent.write_envfile(
-            agent_secrets_envfile(agent_data["id"]),
+            Path(f"agent_{agent_data['id']}_secrets.env"),
             agent_secrets,
         )
 

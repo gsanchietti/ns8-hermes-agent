@@ -19,7 +19,6 @@ from hermes_agent_state import (
     list_known_agent_ids,
     read_agents_from_state,
     route_instance_name,
-    route_path,
     agent_dashboard_host_port,
 )
 
@@ -39,7 +38,7 @@ def delete_agent_route(agent_id, traefik_agent_id, lets_encrypt_cleanup=False):
 
 
 def upsert_agent_route(agent_id, base_virtualhost, lets_encrypt, traefik_agent_id, lets_encrypt_cleanup=False):
-    path = route_path(agent_id)
+    path = f"/hermes-{agent_id}"
     route_request = {
         "instance": route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
         "url": f"http://127.0.0.1:{agent_dashboard_host_port(agent_id, os.environ)}",

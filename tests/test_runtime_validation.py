@@ -226,7 +226,7 @@ class HermesModuleStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             for index, role in enumerate(self.state.ALLOWED_ROLES, start=1):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(index),
+                    Path("agents") / str(index) / "metadata.json",
                     {
                         "id": index,
                         "name": "Valid Name",
@@ -272,7 +272,7 @@ class HermesModuleStateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected fields"):
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(1),
+                    Path("agents") / "1" / "metadata.json",
                     {
                         "id": 1,
                         "name": "Valid Name",
@@ -287,7 +287,7 @@ class HermesModuleStateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid id"):
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(1),
+                    Path("agents") / "1" / "metadata.json",
                     {
                         "id": 0,
                         "name": "Valid Name",
@@ -301,7 +301,7 @@ class HermesModuleStateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid id"):
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(1),
+                    Path("agents") / "1" / "metadata.json",
                     {
                         "id": 31,
                         "name": "Valid Name",
@@ -358,21 +358,11 @@ class HermesModuleStateTest(unittest.TestCase):
             else:
                 del sys.modules["agent"]
 
-    def test_runtime_name_helpers_preserve_split_contract(self):
-        self.assertEqual(self.state.service_unit(1), "hermes@1.service")
-        self.assertEqual(self.state.dashboard_service_unit(1), "hermes-dashboard@1.service")
-        self.assertEqual(self.state.pod_service_unit(1), "hermes-pod@1.service")
-        self.assertEqual(self.state.legacy_service_unit(1), "hermes-agent@1.service")
-        self.assertEqual(self.state.container_name(1), "hermes-1")
-        self.assertEqual(self.state.dashboard_container_name(1), "hermes-dashboard-1")
-        self.assertEqual(self.state.pod_name(1), "hermes-pod-1")
-        self.assertEqual(self.state.legacy_container_name(1), "hermes-agent-1")
-        self.assertEqual(self.state.volume_name(1), "hermes-agent-1-home")
+    def test_route_instance_name_preserves_split_contract(self):
         self.assertEqual(
             self.state.route_instance_name(1, module_id="hermes-agent1"),
             "hermes-agent1-hermes-agent-1",
         )
-        self.assertEqual(self.state.route_path(1), "/hermes-1")
 
     def test_service_templates_keep_runtime_contract(self):
         service_template = SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -464,17 +454,17 @@ class HermesModuleStateTest(unittest.TestCase):
     def test_write_private_textfile_rejects_symlink_target(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             Path("outside.env").write_text("SAFE=1\n", encoding="utf-8")
-            os.symlink("outside.env", self.state.agent_envfile(5))
+            os.symlink("outside.env", Path("agent_5.env"))
 
             with self.assertRaisesRegex(ValueError, "unsafe file path"):
-                self.state.write_private_textfile(self.state.agent_envfile(5), "AGENT_NAME=Blocked\n")
+                self.state.write_private_textfile(Path("agent_5.env"), "AGENT_NAME=Blocked\n")
 
             self.assertEqual(Path("outside.env").read_text(encoding="utf-8"), "SAFE=1\n")
 
     def test_sync_agent_runtime_files_writes_public_env_and_secrets(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             self.state.write_jsonfile(
-                self.state.agent_metadata_path(1),
+                Path("agents") / "1" / "metadata.json",
                 {"id": 1, "name": "Alice User", "role": "developer", "status": "start"},
             )
             write_envfile(
@@ -497,8 +487,8 @@ class HermesModuleStateTest(unittest.TestCase):
             ):
                 self.sync.sync_agent_runtime_files()
 
-            public_env = read_envfile(self.state.agent_envfile(1))
-            agent_secrets = read_envfile(self.state.agent_secrets_envfile(1))
+            public_env = read_envfile(Path("agent_1.env"))
+            agent_secrets = read_envfile(Path("agent_1_secrets.env"))
 
             self.assertEqual(public_env["AGENT_NAME"], "Alice User")
             self.assertEqual(public_env["AGENT_ROLE"], "developer")
@@ -525,12 +515,12 @@ class HermesModuleStateTest(unittest.TestCase):
                 sorted(path.name for path in Path(".").glob("agent_1*.env")),
                 ["agent_1.env", "agent_1_secrets.env"],
             )
-            self.assertFalse((self.state.agent_dir(1) / "home").exists())
+            self.assertFalse((Path("agents") / "1" / "home").exists())
 
     def test_sync_agent_runtime_files_creates_missing_agent_secrets_envfile(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             self.state.write_jsonfile(
-                self.state.agent_metadata_path(1),
+                Path("agents") / "1" / "metadata.json",
                 {"id": 1, "name": "Alice User", "role": "developer", "status": "start"},
             )
             write_envfile(
@@ -556,8 +546,8 @@ class HermesModuleStateTest(unittest.TestCase):
             ):
                 self.sync.sync_agent_runtime_files(agent_id=1)
 
-            public_env = read_envfile(self.state.agent_envfile(1))
-            agent_secrets = read_envfile(self.state.agent_secrets_envfile(1))
+            public_env = read_envfile(Path("agent_1.env"))
+            agent_secrets = read_envfile(Path("agent_1_secrets.env"))
 
             self.assertEqual(public_env["AGENT_NAME"], "Alice User")
             self.assertEqual(public_env["AGENT_DASHBOARD_HOST_PORT"], "20001")
@@ -567,7 +557,7 @@ class HermesModuleStateTest(unittest.TestCase):
     def test_sync_agent_runtime_files_preserves_generated_agent_secret_on_rerun(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             self.state.write_jsonfile(
-                self.state.agent_metadata_path(3),
+                Path("agents") / "3" / "metadata.json",
                 {"id": 3, "name": "Carol Agent", "role": "researcher", "status": "start"},
             )
             write_envfile(
@@ -588,12 +578,12 @@ class HermesModuleStateTest(unittest.TestCase):
                 create=True,
             ):
                 self.sync.sync_agent_runtime_files(agent_id=3)
-                first_sync_secrets = read_envfile(self.state.agent_secrets_envfile(3))
+                first_sync_secrets = read_envfile(Path("agent_3_secrets.env"))
 
                 write_envfile(self.state.SHARED_SECRETS_ENVFILE, {"SMTP_PASSWORD": "new-pass"})
                 self.sync.sync_agent_runtime_files(agent_id=3)
 
-            agent_secrets = read_envfile(self.state.agent_secrets_envfile(3))
+            agent_secrets = read_envfile(Path("agent_3_secrets.env"))
             self.assertEqual(agent_secrets["HERMES_AGENT_SECRET"], first_sync_secrets["HERMES_AGENT_SECRET"])
             self.assertEqual(agent_secrets["SMTP_PASSWORD"], "new-pass")
             self.assertEqual(set(agent_secrets), {"HERMES_AGENT_SECRET", "SMTP_PASSWORD"})
@@ -607,7 +597,7 @@ class HermesModuleStateTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             write_envfile(
-                self.state.agent_envfile(1),
+                Path("agent_1.env"),
                 {
                     "AGENT_ID": "1",
                     "AGENT_NAME": "Seed Agent",
@@ -789,7 +779,7 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(1),
+                    Path("agents") / "1" / "metadata.json",
                     {"id": 1, "name": "Route Agent", "role": "developer", "status": "start"},
                 )
 
@@ -879,7 +869,7 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(1),
+                    Path("agents") / "1" / "metadata.json",
                     {"id": 1, "name": "Route Agent", "role": "developer", "status": "start"},
                 )
 
@@ -957,7 +947,7 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(1),
+                    Path("agents") / "1" / "metadata.json",
                     {"id": 1, "name": "Old Agent", "role": "developer", "status": "start"},
                 )
 
@@ -997,7 +987,7 @@ class HermesModuleStateTest(unittest.TestCase):
     def test_sync_agent_runtime_files_preserves_existing_agent_secret(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             self.state.write_jsonfile(
-                self.state.agent_metadata_path(3),
+                Path("agents") / "3" / "metadata.json",
                 {"id": 3, "name": "Carol Agent", "role": "researcher", "status": "start"},
             )
             write_envfile(
@@ -1005,7 +995,7 @@ class HermesModuleStateTest(unittest.TestCase):
                 {"TIMEZONE": "UTC", "TCP_PORTS_RANGE": "20001-20030"},
             )
             write_envfile(
-                self.state.agent_secrets_envfile(3),
+                Path("agent_3_secrets.env"),
                 {
                     "HERMES_AGENT_SECRET": "preserved",
                     "SMTP_PASSWORD": "old-pass",
@@ -1021,7 +1011,7 @@ class HermesModuleStateTest(unittest.TestCase):
             ):
                 self.sync.sync_agent_runtime_files(agent_id=3)
 
-            agent_secrets = read_envfile(self.state.agent_secrets_envfile(3))
+            agent_secrets = read_envfile(Path("agent_3_secrets.env"))
             self.assertEqual(agent_secrets["HERMES_AGENT_SECRET"], "preserved")
             self.assertEqual(agent_secrets["SMTP_PASSWORD"], "new-pass")
             self.assertEqual(set(agent_secrets), {"HERMES_AGENT_SECRET", "SMTP_PASSWORD"})
@@ -1109,12 +1099,12 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(2),
+                    Path("agents") / "2" / "metadata.json",
                     {"id": 2, "name": "Old Agent", "role": "default", "status": "stop"},
                 )
-                write_envfile(self.state.agent_envfile(2), {"AGENT_NAME": "Old Agent"})
+                write_envfile(Path("agent_2.env"), {"AGENT_NAME": "Old Agent"})
                 write_envfile(
-                    self.state.agent_secrets_envfile(2),
+                    Path("agent_2_secrets.env"),
                     {"HERMES_AGENT_SECRET": "old-secret"},
                 )
 
@@ -1151,12 +1141,12 @@ class HermesModuleStateTest(unittest.TestCase):
                     run_action(CONFIGURE_MODULE_ACTION_DIR, request)
 
                 self.assertEqual(
-                    self.state.read_jsonfile(self.state.agent_metadata_path(1)),
+                    self.state.read_jsonfile(Path("agents") / "1" / "metadata.json"),
                     {"id": 1, "name": "New Agent", "role": "developer", "status": "start"},
                 )
-                self.assertFalse(self.state.agent_dir(2).exists())
-                self.assertFalse(self.state.agent_envfile(2).exists())
-                self.assertFalse(self.state.agent_secrets_envfile(2).exists())
+                self.assertFalse((Path("agents") / "2").exists())
+                self.assertFalse(Path("agent_2.env").exists())
+                self.assertFalse(Path("agent_2_secrets.env").exists())
                 agent_stub.set_env.assert_not_called()
                 command_list = [call.args[0] for call in run_command.call_args_list]
                 self.assertEqual(
@@ -1365,12 +1355,12 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(2),
+                    Path("agents") / "2" / "metadata.json",
                     {"id": 2, "name": "Old Agent", "role": "default", "status": "stop"},
                 )
-                write_envfile(self.state.agent_envfile(2), {"AGENT_NAME": "Old Agent"})
+                write_envfile(Path("agent_2.env"), {"AGENT_NAME": "Old Agent"})
                 write_envfile(
-                    self.state.agent_secrets_envfile(2),
+                    Path("agent_2_secrets.env"),
                     {"HERMES_AGENT_SECRET": "old-secret"},
                 )
 
@@ -1450,11 +1440,11 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 write_envfile(
-                    self.state.agent_envfile(4),
+                    Path("agent_4.env"),
                     {"AGENT_NAME": "Route Agent"},
                 )
                 write_envfile(
-                    self.state.agent_secrets_envfile(4),
+                    Path("agent_4_secrets.env"),
                     {"HERMES_AGENT_SECRET": "persisted-secret"},
                 )
 
@@ -1499,8 +1489,8 @@ class HermesModuleStateTest(unittest.TestCase):
                         mock.call(["podman", "volume", "rm", "--force", "hermes-agent-4-home"], check=True),
                     ],
                 )
-                self.assertFalse(self.state.agent_envfile(4).exists())
-                self.assertFalse(self.state.agent_secrets_envfile(4).exists())
+                self.assertFalse(Path("agent_4.env").exists())
+                self.assertFalse(Path("agent_4_secrets.env").exists())
         finally:
             if original_agent is not None:
                 sys.modules["agent"] = original_agent
@@ -1528,10 +1518,10 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.write_jsonfile(
-                    self.state.agent_metadata_path(1),
+                    Path("agents") / "1" / "metadata.json",
                     {"id": 1, "name": "One Agent", "role": "default", "status": "start"},
                 )
-                write_envfile(self.state.agent_envfile(2), {"AGENT_NAME": "Two Agent"})
+                write_envfile(Path("agent_2.env"), {"AGENT_NAME": "Two Agent"})
 
                 with mock.patch.dict(
                     os.environ,
@@ -1575,7 +1565,7 @@ class HermesModuleStateTest(unittest.TestCase):
     def test_get_configuration_returns_desired_state_only(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             self.state.write_jsonfile(
-                self.state.agent_metadata_path(1),
+                Path("agents") / "1" / "metadata.json",
                 {"id": 1, "name": "Runtime Agent", "role": "developer", "status": "stop"},
             )
             stdout = io.StringIO()
@@ -1609,7 +1599,7 @@ class HermesModuleStateTest(unittest.TestCase):
     def test_get_agent_runtime_reports_actual_runtime_status(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             self.state.write_jsonfile(
-                self.state.agent_metadata_path(1),
+                Path("agents") / "1" / "metadata.json",
                 {"id": 1, "name": "Runtime Agent", "role": "developer", "status": "stop"},
             )
             stdout = io.StringIO()
@@ -1635,19 +1625,19 @@ class HermesModuleStateTest(unittest.TestCase):
     def test_list_known_agent_ids_scans_metadata_and_generated_files(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
             self.state.write_jsonfile(
-                self.state.agent_metadata_path(1),
+                Path("agents") / "1" / "metadata.json",
                 {"id": 1, "name": "One Agent", "role": "default", "status": "start"},
             )
-            write_envfile(self.state.agent_envfile(2), {"AGENT_NAME": "Two Agent"})
-            write_envfile(self.state.agent_secrets_envfile(3), {"HERMES_AGENT_SECRET": "secret"})
+            write_envfile(Path("agent_2.env"), {"AGENT_NAME": "Two Agent"})
+            write_envfile(Path("agent_3_secrets.env"), {"HERMES_AGENT_SECRET": "secret"})
 
             self.assertEqual(self.state.list_known_agent_ids(), [1, 2, 3])
 
     def test_list_known_agent_ids_ignores_out_of_range_entries(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
-            self.state.ensure_private_directory(self.state.agent_dir(31))
-            write_envfile(self.state.agent_envfile(32), {"AGENT_NAME": "Ignored Agent"})
-            write_envfile(self.state.agent_secrets_envfile(0), {"HERMES_AGENT_SECRET": "ignored"})
+            self.state.ensure_private_directory(Path("agents") / "31")
+            write_envfile(Path("agent_32.env"), {"AGENT_NAME": "Ignored Agent"})
+            write_envfile(Path("agent_0_secrets.env"), {"HERMES_AGENT_SECRET": "ignored"})
 
             self.assertEqual(self.state.list_known_agent_ids(), [])
 
@@ -1667,9 +1657,9 @@ class HermesModuleStateTest(unittest.TestCase):
         original_argv = sys.argv[:]
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
-                self.state.ensure_private_directory(self.state.agent_dir(4))
-                write_envfile(self.state.agent_envfile(4), {"AGENT_NAME": "Four Agent"})
-                write_envfile(self.state.agent_secrets_envfile(4), {"HERMES_AGENT_SECRET": "secret"})
+                self.state.ensure_private_directory(Path("agents") / "4")
+                write_envfile(Path("agent_4.env"), {"AGENT_NAME": "Four Agent"})
+                write_envfile(Path("agent_4_secrets.env"), {"HERMES_AGENT_SECRET": "secret"})
 
                 def run_side_effect(command, check=False, **kwargs):
                     if command == ["podman", "volume", "exists", "hermes-agent-4-home"]:
@@ -1685,9 +1675,9 @@ class HermesModuleStateTest(unittest.TestCase):
                 ):
                     runpy.run_path(str(REMOVE_AGENT_STATE_PATH), run_name="__main__")
 
-                self.assertTrue(self.state.agent_envfile(4).exists())
-                self.assertTrue(self.state.agent_secrets_envfile(4).exists())
-                self.assertTrue(self.state.agent_dir(4).exists())
+                self.assertTrue(Path("agent_4.env").exists())
+                self.assertTrue(Path("agent_4_secrets.env").exists())
+                self.assertTrue((Path("agents") / "4").exists())
         finally:
             sys.argv[:] = original_argv
 

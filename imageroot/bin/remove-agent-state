@@ -8,13 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pypkg"))
 
-from hermes_agent_state import (
-    MAX_AGENTS,
-    agent_dir,
-    agent_envfile,
-    agent_secrets_envfile,
-    volume_name,
-)
+from hermes_agent_state import MAX_AGENTS
 
 
 def parse_agent_id(value):
@@ -26,26 +20,27 @@ def parse_agent_id(value):
 
 def ensure_volume_removed(agent_id):
     exists_result = subprocess.run(
-        ["podman", "volume", "exists", volume_name(agent_id)],
+        ["podman", "volume", "exists", f"hermes-agent-{agent_id}-home"],
         check=False,
     )
     if exists_result.returncode == 0:
-        subprocess.run(["podman", "volume", "rm", "--force", volume_name(agent_id)], check=True)
+        subprocess.run(["podman", "volume", "rm", "--force", f"hermes-agent-{agent_id}-home"], check=True)
         return
     if exists_result.returncode == 1:
         return
-    raise RuntimeError(f"failed to inspect volume {volume_name(agent_id)}")
+    raise RuntimeError(f"failed to inspect volume hermes-agent-{agent_id}-home")
 
 
 def remove_agent_state(agent_id):
     ensure_volume_removed(agent_id)
 
-    for path in (agent_envfile(agent_id), agent_secrets_envfile(agent_id)):
+    for path in (Path(f"agent_{agent_id}.env"), Path(f"agent_{agent_id}_secrets.env")):
         if path.exists():
             path.unlink()
 
-    if agent_dir(agent_id).exists():
-        shutil.rmtree(agent_dir(agent_id), ignore_errors=True)
+    agent_state_dir = Path("agents") / str(agent_id)
+    if agent_state_dir.exists():
+        shutil.rmtree(agent_state_dir, ignore_errors=True)
 
 
 def main():
