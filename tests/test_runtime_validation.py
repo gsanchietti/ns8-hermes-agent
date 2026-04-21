@@ -39,6 +39,7 @@ UPDATE_TCP_PORTS_PATH = ROOT / "imageroot" / "update-module.d" / "10ensure_tcp_p
 SMARTHOST_CHANGED_EVENT_PATH = ROOT / "imageroot" / "events" / "smarthost-changed" / "10reload_services"
 LIST_USER_DOMAINS_PATH = ROOT / "imageroot" / "actions" / "list-user-domains" / "10read"
 LIST_DOMAIN_USERS_PATH = ROOT / "imageroot" / "actions" / "list-domain-users" / "10read"
+AUTHPROXY_PATH = ROOT / "containers" / "auth" / "authproxy.py"
 
 
 def load_module(path, module_name):
@@ -266,6 +267,164 @@ def run_seed_script(script, data_dir, agent_id, agent_name, agent_role):
             "AGENT_ROLE": agent_role,
         },
     )
+
+
+@contextmanager
+def mocked_authproxy_dependencies():
+    module_names = [
+        "fastapi",
+        "fastapi.responses",
+        "httpx",
+        "itsdangerous",
+        "ldap3",
+        "ldap3.utils",
+        "ldap3.utils.conv",
+        "uvicorn",
+    ]
+    original_modules = {name: sys.modules.get(name) for name in module_names}
+
+    fastapi_module = types.ModuleType("fastapi")
+    fastapi_responses_module = types.ModuleType("fastapi.responses")
+    httpx_module = types.ModuleType("httpx")
+    itsdangerous_module = types.ModuleType("itsdangerous")
+    ldap3_module = types.ModuleType("ldap3")
+    ldap3_utils_module = types.ModuleType("ldap3.utils")
+    ldap3_utils_conv_module = types.ModuleType("ldap3.utils.conv")
+    uvicorn_module = types.ModuleType("uvicorn")
+
+    class FakeFastAPI:
+        def __init__(self, *args, **kwargs):
+            self.state = types.SimpleNamespace()
+            self.lifespan = kwargs.get("lifespan")
+
+        def get(self, *_args, **_kwargs):
+            def decorator(function):
+                return function
+
+            return decorator
+
+        def api_route(self, *_args, **_kwargs):
+            def decorator(function):
+                return function
+
+            return decorator
+
+        def on_event(self, *_args, **_kwargs):
+            raise AssertionError("authproxy should use FastAPI lifespan instead of on_event")
+
+    class FakeResponse:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def set_cookie(self, *args, **kwargs):
+            self.cookie_args = args
+            self.cookie_kwargs = kwargs
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        async def request(self, *args, **kwargs):
+            raise NotImplementedError
+
+        async def aclose(self):
+            return None
+
+    class FakeSerializer:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def dumps(self, payload):
+            return json.dumps(payload)
+
+        def loads(self, payload, max_age=None):
+            del max_age
+            return json.loads(payload)
+
+    class FakeConnection:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+    def escape_filter_chars(value):
+        return value.replace("\\", r"\5c").replace("*", r"\2a").replace("(", r"\28").replace(")", r"\29")
+
+    setattr(fastapi_module, "FastAPI", FakeFastAPI)
+    setattr(fastapi_module, "Request", object)
+    setattr(fastapi_responses_module, "HTMLResponse", FakeResponse)
+    setattr(fastapi_responses_module, "JSONResponse", FakeResponse)
+    setattr(fastapi_responses_module, "PlainTextResponse", FakeResponse)
+    setattr(fastapi_responses_module, "Response", FakeResponse)
+    setattr(httpx_module, "AsyncClient", FakeAsyncClient)
+    setattr(itsdangerous_module, "BadSignature", ValueError)
+    setattr(itsdangerous_module, "BadTimeSignature", ValueError)
+    setattr(itsdangerous_module, "URLSafeTimedSerializer", FakeSerializer)
+    setattr(ldap3_module, "ALL", object())
+    setattr(ldap3_module, "Connection", FakeConnection)
+    setattr(ldap3_module, "Server", object)
+    setattr(ldap3_utils_conv_module, "escape_filter_chars", escape_filter_chars)
+    setattr(uvicorn_module, "run", lambda *args, **kwargs: None)
+
+    sys.modules["fastapi"] = fastapi_module
+    sys.modules["fastapi.responses"] = fastapi_responses_module
+    sys.modules["httpx"] = httpx_module
+    sys.modules["itsdangerous"] = itsdangerous_module
+    sys.modules["ldap3"] = ldap3_module
+    sys.modules["ldap3.utils"] = ldap3_utils_module
+    sys.modules["ldap3.utils.conv"] = ldap3_utils_conv_module
+    sys.modules["uvicorn"] = uvicorn_module
+
+    try:
+        yield
+    finally:
+        for name, original_module in original_modules.items():
+            if original_module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original_module
+
+
+class HermesAuthProxyTest(unittest.TestCase):
+    def load_authproxy(self):
+        module_name = "authproxy_under_test"
+        sys.modules.pop(module_name, None)
+        with mocked_authproxy_dependencies():
+            return load_module(AUTHPROXY_PATH, module_name)
+
+    def test_authproxy_uses_fastapi_lifespan(self):
+        authproxy = self.load_authproxy()
+
+        self.assertIsNotNone(authproxy.app.lifespan)
+
+    def test_user_search_filter_uses_schema_safe_attributes(self):
+        authproxy = self.load_authproxy()
+
+        self.assertEqual(
+            authproxy.user_search_filter("alice", "rfc2307"),
+            "(|(uid=alice)(cn=alice)(mail=alice))",
+        )
+        self.assertEqual(
+            authproxy.user_search_filter("alice", "ad"),
+            "(|(sAMAccountName=alice)(userPrincipalName=alice)(uid=alice))",
+        )
+
+    def test_user_search_filter_escapes_special_characters(self):
+        authproxy = self.load_authproxy()
+
+        self.assertEqual(
+            authproxy.user_search_filter("ali*(ce)", "rfc2307"),
+            "(|(uid=ali\\2a\\28ce\\29)(cn=ali\\2a\\28ce\\29)(mail=ali\\2a\\28ce\\29))",
+        )
 
 
 class HermesModuleStateTest(unittest.TestCase):

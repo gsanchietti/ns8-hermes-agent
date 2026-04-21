@@ -3,6 +3,7 @@
 import base64
 import binascii
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from html import escape
 
@@ -125,24 +126,26 @@ def parse_basic_auth(request):
 def user_search_filter(username, schema):
     escaped_username = escape_filter_chars(username)
     if "ad" in schema:
-        filters = (
-            f"(sAMAccountName={escaped_username})",
-            f"(userPrincipalName={escaped_username})",
-            f"(uid={escaped_username})",
-        )
+        attributes = ("sAMAccountName", "userPrincipalName", "uid")
     else:
-        filters = (
-            f"(uid={escaped_username})",
-            f"(cn={escaped_username})",
-            f"(mail={escaped_username})",
-            f"(sAMAccountName={escaped_username})",
-        )
+        attributes = ("uid", "cn", "mail")
+
+    filters = tuple(f"({attribute}={escaped_username})" for attribute in attributes)
 
     return f"(|{''.join(filters)})"
 
 
 def ldap_server(config):
     return Server(config.ldap_host, port=config.ldap_port, use_ssl=config.ldap_port == 636, get_info=ALL)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.client = httpx.AsyncClient(timeout=60.0, follow_redirects=False)
+    try:
+        yield
+    finally:
+        await app.state.client.aclose()
 
 
 def lookup_user_dn(username, config):
@@ -302,17 +305,7 @@ def response_headers(upstream_response, prefix):
     return headers
 
 
-app = FastAPI()
-
-
-@app.on_event("startup")
-async def startup():
-    app.state.client = httpx.AsyncClient(timeout=60.0, follow_redirects=False)
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await app.state.client.aclose()
+app = FastAPI(lifespan=lifespan)
 
 
 @app.get("/health")
@@ -342,7 +335,7 @@ async def proxy(path: str, request: Request):
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
 
-    upstream_response = await app.state.client.request(
+    upstream_response = await request.app.state.client.request(
         method=request.method,
         url=upstream_url,
         headers=upstream_headers(request),
