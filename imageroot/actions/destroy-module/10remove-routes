@@ -10,7 +10,13 @@ import agent.tasks
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
 
-from hermes_agent_state import LETS_ENCRYPT_ENV, env_to_bool, list_known_agent_ids, route_instance_name
+from hermes_agent_state import (
+    LETS_ENCRYPT_ENV,
+    env_to_bool,
+    list_known_agent_ids,
+    route_instance_name,
+    shared_route_instance_name,
+)
 
 
 json.load(sys.stdin)
@@ -22,12 +28,20 @@ if traefik_agent_id is None:
 known_agent_ids = list_known_agent_ids()
 cleanup_lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_ENV))
 
-# The first delete tears down shared certificate state; the remaining requests
-# only remove per-agent path routes from the shared host.
-for index, agent_id in enumerate(known_agent_ids):
+# Delete the shared route first, then remove any retained legacy per-agent
+# route instances from older module revisions.
+route_request = {"instance": shared_route_instance_name(module_id=os.environ.get("MODULE_ID"))}
+if cleanup_lets_encrypt:
+    route_request["lets_encrypt_cleanup"] = True
+response = agent.tasks.run(
+    agent_id=traefik_agent_id,
+    action="delete-route",
+    data=route_request,
+)
+agent.assert_exp(response["exit_code"] == 0)
+
+for agent_id in known_agent_ids:
     route_request = {"instance": route_instance_name(agent_id, module_id=os.environ.get("MODULE_ID"))}
-    if cleanup_lets_encrypt and index == 0:
-        route_request["lets_encrypt_cleanup"] = True
     response = agent.tasks.run(
         agent_id=traefik_agent_id,
         action="delete-route",

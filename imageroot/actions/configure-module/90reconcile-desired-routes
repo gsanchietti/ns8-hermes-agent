@@ -15,17 +15,18 @@ from hermes_agent_state import (
     BASE_VIRTUALHOST_PREVIOUS_ENV,
     LETS_ENCRYPT_ENV,
     LETS_ENCRYPT_PREVIOUS_ENV,
+    TCP_PORT_ENV,
     env_to_bool,
     list_known_agent_ids,
     read_agents_from_state,
     route_instance_name,
-    agent_dashboard_host_port,
+    shared_route_instance_name,
 )
 
 
-def delete_agent_route(agent_id, traefik_agent_id, lets_encrypt_cleanup=False):
+def delete_route(instance_name, traefik_agent_id, lets_encrypt_cleanup=False):
     route_request = {
-        "instance": route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
+        "instance": instance_name,
     }
     if lets_encrypt_cleanup:
         route_request["lets_encrypt_cleanup"] = True
@@ -37,24 +38,21 @@ def delete_agent_route(agent_id, traefik_agent_id, lets_encrypt_cleanup=False):
     agent.assert_exp(response["exit_code"] == 0)
 
 
-def upsert_agent_route(agent_id, base_virtualhost, lets_encrypt, traefik_agent_id, lets_encrypt_cleanup=False):
-    path = f"/hermes-{agent_id}"
-    # The dashboard is published on one shared host and distinguished by path
-    # prefixes, so Traefik must strip the prefix while forwarding it back via
-    # X-Forwarded-Prefix for applications that build absolute URLs.
+def delete_legacy_routes(agent_ids, traefik_agent_id):
+    for agent_id in agent_ids:
+        delete_route(
+            route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
+            traefik_agent_id,
+        )
+
+
+def upsert_shared_route(base_virtualhost, lets_encrypt, traefik_agent_id, lets_encrypt_cleanup=False):
     route_request = {
-        "instance": route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
-        "url": f"http://127.0.0.1:{agent_dashboard_host_port(agent_id, os.environ)}",
+        "instance": shared_route_instance_name(module_id=os.environ["MODULE_ID"]),
+        "url": f"http://127.0.0.1:{os.environ[TCP_PORT_ENV]}",
         "host": base_virtualhost,
-        "path": path,
         "http2https": True,
         "lets_encrypt": lets_encrypt,
-        "strip_prefix": True,
-        "headers": {
-            "request": {
-                "X-Forwarded-Prefix": path,
-            }
-        },
     }
     if lets_encrypt_cleanup:
         route_request["lets_encrypt_cleanup"] = True
@@ -74,8 +72,9 @@ previous_base_virtualhost = (os.getenv(BASE_VIRTUALHOST_PREVIOUS_ENV) or "").str
 requested_base_virtualhost = ((request.get("base_virtualhost") or "").strip().lower() if "base_virtualhost" in request else None)
 lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_ENV))
 previous_lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_PREVIOUS_ENV))
+desired_agents = read_agents_from_state()
 
-if not known_ids:
+if not known_ids and not base_virtualhost and requested_base_virtualhost is None and not previous_base_virtualhost:
     sys.exit(0)
 
 if not base_virtualhost and requested_base_virtualhost is None and not previous_base_virtualhost:
@@ -94,22 +93,32 @@ cleanup_previous_host = host_changed and previous_lets_encrypt
 cleanup_disable_lets_encrypt = bool(base_virtualhost) and not host_changed and previous_lets_encrypt and not lets_encrypt
 cleanup_delete_all_routes = not base_virtualhost and (lets_encrypt or previous_lets_encrypt)
 
+if cleanup_previous_host:
+    delete_route(
+        shared_route_instance_name(module_id=os.environ["MODULE_ID"]),
+        traefik_agent_id,
+        lets_encrypt_cleanup=True,
+    )
+
+delete_legacy_routes(known_ids, traefik_agent_id)
+
 if base_virtualhost:
-    desired_agents = read_agents_from_state()
-    if cleanup_previous_host and desired_agents:
-        delete_agent_route(desired_agents[0]["id"], traefik_agent_id, lets_encrypt_cleanup=True)
-    for index, agent_data in enumerate(desired_agents):
-        upsert_agent_route(
-            agent_data["id"],
+    if desired_agents:
+        upsert_shared_route(
             base_virtualhost,
             lets_encrypt,
             traefik_agent_id,
-            lets_encrypt_cleanup=cleanup_disable_lets_encrypt and index == 0,
+            lets_encrypt_cleanup=cleanup_disable_lets_encrypt,
+        )
+    else:
+        delete_route(
+            shared_route_instance_name(module_id=os.environ["MODULE_ID"]),
+            traefik_agent_id,
+            lets_encrypt_cleanup=cleanup_delete_all_routes,
         )
 else:
-    for index, agent_id in enumerate(known_ids):
-        delete_agent_route(
-            agent_id,
-            traefik_agent_id,
-            lets_encrypt_cleanup=cleanup_delete_all_routes and index == 0,
-        )
+    delete_route(
+        shared_route_instance_name(module_id=os.environ["MODULE_ID"]),
+        traefik_agent_id,
+        lets_encrypt_cleanup=cleanup_delete_all_routes,
+    )

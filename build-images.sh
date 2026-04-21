@@ -64,7 +64,7 @@ buildah add "${container}" ui/dist /ui
 # Setup the entrypoint and set a rootless container
 buildah config --entrypoint=/ \
     --label="org.nethserver.authorizations=cluster:accountconsumer traefik@node:routeadm node:portsadm" \
-    --label="org.nethserver.tcp-ports-demand=30" \
+    --label="org.nethserver.tcp-ports-demand=31" \
     --label="org.nethserver.rootfull=0" \
     --label="org.nethserver.images=${component_images[*]}" \
     "${container}"

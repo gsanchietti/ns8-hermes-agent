@@ -4,58 +4,11 @@ set -e
 
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
-WEB_SOURCE_DIR="${INSTALL_DIR}/web"
 BUILT_WEB_DIST="${INSTALL_DIR}/hermes_cli/web_dist"
-PATCH_SCRIPT="${INSTALL_DIR}/patch_dashboard_source.py"
 
 source "${INSTALL_DIR}/.venv/bin/activate"
 
-prepare_dashboard_web_ui() {
-    if [ ! -d "$WEB_SOURCE_DIR" ]; then
-        return
-    fi
-
-    python3 "$PATCH_SCRIPT" "$INSTALL_DIR"
-
-    (
-        cd "$WEB_SOURCE_DIR"
-        npm run build
-    )
-
-    export HERMES_WEB_DIST="$BUILT_WEB_DIST"
-
-    if [ -n "${BASE_URL:-}" ]; then
-        export HERMES_WEB_DIST="/tmp/hermes-web-dist"
-        rm -rf "$HERMES_WEB_DIST"
-        cp -a "$BUILT_WEB_DIST" "$HERMES_WEB_DIST"
-
-        python3 - "$HERMES_WEB_DIST/index.html" "$BASE_URL" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-index_path = Path(sys.argv[1])
-base_url = sys.argv[2].rstrip("/") or "/"
-base_href = f"{base_url.rstrip('/')}/" if base_url != "/" else "/"
-marker = "window.__HERMES_BASE_URL__"
-script = f"<script>{marker}={json.dumps(base_url)};</script>"
-base_tag = f"<base href={json.dumps(base_href)} />"
-
-html = index_path.read_text(encoding="utf-8")
-if "<base href=" not in html:
-    html = html.replace("</head>", f"{base_tag}</head>", 1)
-if marker not in html:
-    html = html.replace("</head>", f"{script}</head>", 1)
-    index_path.write_text(html, encoding="utf-8")
-elif "<base href=" not in html:
-    index_path.write_text(html, encoding="utf-8")
-PY
-    fi
-}
-
-if [ "${1:-}" = "dashboard" ]; then
-    prepare_dashboard_web_ui
-elif [ -d "$BUILT_WEB_DIST" ]; then
+if [ -d "$BUILT_WEB_DIST" ]; then
     export HERMES_WEB_DIST="$BUILT_WEB_DIST"
 fi
 

@@ -68,13 +68,13 @@ This document maps the current layout.
 
 ### `imageroot/update-module.d/`
 
-- `10ensure_tcp_ports`: backfills the managed 30-port TCP allocation during upgrades when older instances are missing `TCP_PORT` or `TCP_PORTS_RANGE`.
+- `10ensure_tcp_ports`: backfills the managed 31-port TCP allocation during upgrades when older instances are missing `TCP_PORT` or `TCP_PORTS_RANGE`.
 
 ### `imageroot/systemd/user/`
 
 - `hermes@.service`: primary gateway service per configured agent.
 - `hermes-dashboard@.service`: dashboard sidecar service per configured agent.
-- `hermes-auth@.service`: authentication proxy sidecar service per configured agent.
+- `hermes-auth.service`: shared authentication proxy service for the shared virtualhost.
 - `hermes-pod@.service`: per-agent pod owner unit that publishes the dashboard port.
 
 ### `imageroot/templates/`
@@ -84,11 +84,10 @@ This document maps the current layout.
 
 ## `containers/`
 
-- `containers/auth/Containerfile`: per-agent dashboard auth proxy image.
-- `containers/auth/authproxy.py`: FastAPI auth proxy that authenticates each published dashboard route against LDAP, issues a path-scoped session cookie, logs auth attempts and outcomes to stdout, and proxies requests to the internal dashboard.
-- `containers/hermes/Containerfile`: Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:v2026.4.16` and carrying the startup patch helper for the upstream dashboard sources.
-- `containers/hermes/entrypoint.sh`: wrapper entrypoint that bootstraps the Hermes home volume, patches and rebuilds the upstream dashboard sources for dashboard runs, injects the runtime `BASE_URL` plus an HTML `<base href>` into the served bundle, and then delegates to the upstream CLI.
-- `containers/hermes/patch_dashboard_source.py`: source-level patch script applied at container start to make the upstream dashboard bundle prefix-aware across routing, API calls, plugin assets, and static asset paths.
+- `containers/auth/Containerfile`: shared dashboard auth proxy image.
+- `containers/auth/authproxy.py`: FastAPI auth proxy that authenticates the shared virtualhost against LDAP, issues a host-wide session cookie, logs auth attempts and outcomes to stdout, and proxies authenticated sessions to the assigned dashboard upstream from `authproxy_agents.json`.
+- `containers/hermes/Containerfile`: Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:v2026.4.16` without a dashboard source patch helper.
+- `containers/hermes/entrypoint.sh`: wrapper entrypoint that bootstraps the Hermes home volume, exports the bundled `web_dist` when present, and then delegates to the upstream CLI.
 
 ## `ui/`
 

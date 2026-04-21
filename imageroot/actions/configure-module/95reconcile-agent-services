@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ from hermes_agent_state import (
     LETS_ENCRYPT_PREVIOUS_ENV,
     read_agents_from_state,
 )
+from hermes_user_domain import auth_required
 
 
 def run(command, check=True):
@@ -24,6 +26,7 @@ def stop_disable_agent(agent_id):
     # Reset the whole runtime footprint for stopped agents so systemd can
     # recreate the declared one-agent/one-pod layout on the next start.
     run(["systemctl", "--user", "disable", "--now", f"hermes@{agent_id}.service"], check=False)
+    run(["systemctl", "--user", "disable", "--now", f"hermes-auth@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "stop", f"hermes-pod@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "disable", "--now", f"hermes-agent@{agent_id}.service"], check=False)
     run(["podman", "pod", "rm", "--force", f"hermes-pod-{agent_id}"], check=False)
@@ -34,19 +37,29 @@ def stop_disable_agent(agent_id):
 
 
 json.load(sys.stdin)
+desired_agents = read_agents_from_state()
 
-for agent_data in read_agents_from_state():
+for agent_data in desired_agents:
     agent_id = agent_data["id"]
     if agent_data["status"] == "start":
         # Stop first so the unit rebuilds the pod and containers from the fresh
         # generated env files instead of reusing stale runtime state.
         run(["systemctl", "--user", "enable", f"hermes@{agent_id}.service"])
+        run(["systemctl", "--user", "disable", "--now", f"hermes-auth@{agent_id}.service"], check=False)
         run(["systemctl", "--user", "stop", f"hermes@{agent_id}.service"], check=False)
         run(["systemctl", "--user", "stop", f"hermes-pod@{agent_id}.service"], check=False)
         run(["systemctl", "--user", "start", f"hermes@{agent_id}.service"])
         continue
 
     stop_disable_agent(agent_id)
+
+if auth_required((os.getenv("BASE_VIRTUALHOST") or "").strip().lower(), desired_agents):
+    run(["systemctl", "--user", "enable", "hermes-auth.service"])
+    run(["systemctl", "--user", "stop", "hermes-auth.service"], check=False)
+    run(["systemctl", "--user", "start", "hermes-auth.service"])
+else:
+    run(["systemctl", "--user", "disable", "--now", "hermes-auth.service"], check=False)
+    run(["podman", "rm", "--force", "hermes-auth"], check=False)
 
 agent.unset_env(BASE_VIRTUALHOST_PREVIOUS_ENV)
 agent.unset_env(LETS_ENCRYPT_PREVIOUS_ENV)

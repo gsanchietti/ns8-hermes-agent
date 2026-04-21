@@ -1,6 +1,6 @@
 [Unit]
 Description=Hermes pod %i
-Before=hermes@%i.service hermes-dashboard@%i.service hermes-auth@%i.service
+Before=hermes@%i.service hermes-dashboard@%i.service
 
 [Service]
 Environment=PODMAN_SYSTEMD_UNIT=%n
@@ -16,5 +16,5 @@ ExecStart=runagent /usr/bin/podman pod create \
 		--name hermes-pod-%i \
 		--infra-name hermes-pod-%i-infra \
 		--network=slirp4netns:allow_host_loopback=true \
-		--publish 127.0.0.1:${AGENT_DASHBOARD_HOST_PORT}:9119
+		--publish 127.0.0.1:${AGENT_DASHBOARD_HOST_PORT}:9120
 ExecStop=-/usr/bin/podman pod rm --force hermes-pod-%i

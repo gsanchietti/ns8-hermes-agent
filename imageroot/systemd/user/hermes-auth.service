@@ -1,0 +1,36 @@
+[Unit]
+Description=Hermes shared auth proxy
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+EnvironmentFile=-%S/state/environment
+EnvironmentFile=-%S/state/authproxy.env
+WorkingDirectory=%S/state
+Restart=on-failure
+KillMode=none
+Type=notify
+NotifyAccess=all
+ExecStartPre=/usr/local/bin/runagent sync-agent-runtime
+ExecStartPre=-/usr/bin/podman rm --force hermes-auth
+ExecStart=runagent /usr/bin/podman run \
+		--name hermes-auth \
+		--replace \
+		--rm \
+		--sdnotify=conmon \
+		--cgroups=no-conmon \
+		--network=slirp4netns:allow_host_loopback=true \
+		--publish 127.0.0.1:${TCP_PORT}:9119 \
+		--env-file %S/state/authproxy.env \
+		--env-file %S/state/authproxy_secrets.env \
+		--env AUTH_PROXY_PORT=9119 \
+		--env AUTH_PROXY_AGENT_REGISTRY=/app/authproxy_agents.json \
+		--volume %S/state/authproxy_agents.json:/app/authproxy_agents.json:ro,z \
+		--tz=${TIMEZONE} \
+		${HERMES_AGENT_AUTH_IMAGE} \
+		python /app/authproxy.py
+ExecStop=/usr/bin/podman stop --ignore --time 10 hermes-auth
+ExecStopPost=-/usr/bin/podman rm --force hermes-auth
+TimeoutStopSec=70
+
+[Install]
+WantedBy=default.target

@@ -24,7 +24,6 @@ ExecStart=runagent /usr/bin/podman run \
 		--pod hermes-pod-%i \
 		--env-file %S/state/agent_%i.env \
 		--env GATEWAY_HEALTH_URL=http://127.0.0.1:8642 \
-		--env BASE_URL=/hermes-%i \
 		--volume hermes-agent-%i-home:/opt/data:ro,z \
 		--tz=${TIMEZONE} \
 		${HERMES_AGENT_HERMES_IMAGE} \

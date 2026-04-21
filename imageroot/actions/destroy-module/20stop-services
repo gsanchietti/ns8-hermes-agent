@@ -16,8 +16,12 @@ def run(command, check=True):
 
 json.load(sys.stdin)
 
+run(["systemctl", "--user", "disable", "--now", "hermes-auth.service"], check=False)
+run(["podman", "rm", "--force", "hermes-auth"], check=False)
+
 for agent_id in list_known_agent_ids():
     run(["systemctl", "--user", "disable", "--now", f"hermes@{agent_id}.service"], check=False)
+    run(["systemctl", "--user", "disable", "--now", f"hermes-auth@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "stop", f"hermes-pod@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "disable", "--now", f"hermes-agent@{agent_id}.service"], check=False)
     run(["podman", "pod", "rm", "--force", f"hermes-pod-{agent_id}"], check=False)

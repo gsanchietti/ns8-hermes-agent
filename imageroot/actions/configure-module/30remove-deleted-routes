@@ -43,7 +43,7 @@ if traefik_agent_id is None:
     raise ValueError("traefik@node route agent not found")
 
 # Traefik only needs one delete request to carry the certificate cleanup flag;
-# the remaining route deletions should leave shared TLS state alone.
+# the remaining legacy route deletions should leave shared TLS state alone.
 cleanup_removed_routes = not desired_ids and (lets_encrypt or previous_lets_encrypt)
 
 for index, agent_id in enumerate(removed_ids):

@@ -62,6 +62,7 @@ if "lets_encrypt" in request and not isinstance(request.get("lets_encrypt"), boo
 
 agents = request.get("agents", [])
 seen_ids = set()
+seen_allowed_users = set()
 
 requires_auth = auth_required(base_virtualhost, agents)
 allowed_users = []
@@ -96,6 +97,14 @@ for index, agent_data in enumerate(agents):
         fail(f"agents[{index}].allowed_user", "agents", agent_data.get("allowed_user"), "agent_allowed_user_required")
 
     if allowed_user:
+        if requires_auth and allowed_user in seen_allowed_users:
+            fail(
+                f"agents[{index}].allowed_user",
+                "agents",
+                allowed_user,
+                "agent_allowed_user_duplicated",
+            )
+        seen_allowed_users.add(allowed_user)
         allowed_users.append((index, allowed_user))
 
 if requires_auth and not user_domain:

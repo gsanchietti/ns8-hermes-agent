@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
-import base64
-import binascii
+import json
 import logging
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from html import escape
+from urllib.parse import parse_qs
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from itsdangerous import BadSignature, BadTimeSignature, URLSafeTimedSerializer
 from ldap3 import ALL, Connection, Server
 from ldap3.utils.conv import escape_filter_chars
@@ -20,6 +21,9 @@ from ldap3.utils.conv import escape_filter_chars
 
 SESSION_COOKIE = "hermes_dashboard_session"
 SESSION_TTL_SECONDS = 8 * 60 * 60
+LOGIN_PATH = "/login"
+LOGOUT_PATH = "/logout"
+TARGET_PATH_PATTERN = re.compile(r"^/hermes-(\d+)/?$")
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -34,10 +38,20 @@ LOGGER = logging.getLogger("hermes.authproxy")
 
 
 @dataclass(frozen=True)
-class RuntimeConfig:
-    agent_id: str
+class AgentRecord:
+    agent_id: int
     agent_name: str
     allowed_user: str
+    status: str
+    upstream_url: str
+
+    @property
+    def display_name(self):
+        return self.agent_name or f"Agent {self.agent_id}"
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
     user_domain: str
     ldap_host: str
     ldap_port: int
@@ -46,13 +60,8 @@ class RuntimeConfig:
     ldap_bind_dn: str
     ldap_bind_password: str
     session_secret: str
-    dashboard_upstream_url: str
-    base_url: str
-
-    @property
-    def realm(self):
-        agent_label = self.agent_name or f"Agent {self.agent_id}".strip()
-        return f"Hermes dashboard: {agent_label}"
+    agents_by_id: dict
+    agents_by_user: dict
 
 
 def env(name, default=""):
@@ -75,21 +84,44 @@ def configure_logging():
 configure_logging()
 
 
-def normalize_prefix(value):
-    prefix = (value or "").strip()
-    if not prefix:
-        return ""
-    if not prefix.startswith("/"):
-        prefix = f"/{prefix}"
-    return prefix.rstrip("/") or "/"
+def load_agent_registry(path):
+    registry_path = path or "/app/authproxy_agents.json"
+
+    try:
+        with open(registry_path, "r", encoding="utf-8") as registry_file:
+            payload = json.load(registry_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}, {}
+
+    agents_by_id = {}
+    agents_by_user = {}
+    for raw_agent in payload.get("agents", []):
+        try:
+            agent_record = AgentRecord(
+                agent_id=int(raw_agent["id"]),
+                agent_name=str(raw_agent.get("name") or "").strip(),
+                allowed_user=str(raw_agent["allowed_user"]).strip(),
+                status=str(raw_agent.get("status") or "").strip().lower(),
+                upstream_url=str(raw_agent["upstream_url"]).rstrip("/"),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if not agent_record.allowed_user or not agent_record.upstream_url:
+            continue
+        if agent_record.allowed_user in agents_by_user:
+            return {}, {}
+
+        agents_by_id[agent_record.agent_id] = agent_record
+        agents_by_user[agent_record.allowed_user] = agent_record
+
+    return agents_by_id, agents_by_user
 
 
 def load_config():
     ldap_port = int(env("LDAP_PORT", "389") or "389")
+    agents_by_id, agents_by_user = load_agent_registry(env("AUTH_PROXY_AGENT_REGISTRY", "/app/authproxy_agents.json"))
     return RuntimeConfig(
-        agent_id=env("AGENT_ID"),
-        agent_name=env("AGENT_NAME") or env("AGENT_ID"),
-        allowed_user=env("AGENT_ALLOWED_USER"),
         user_domain=env("USER_DOMAIN").lower(),
         ldap_host=env("LDAP_HOST"),
         ldap_port=ldap_port,
@@ -97,31 +129,24 @@ def load_config():
         ldap_schema=env("LDAP_SCHEMA").lower(),
         ldap_bind_dn=env("LDAP_BIND_DN"),
         ldap_bind_password=env("LDAP_BIND_PASSWORD"),
-        session_secret=env("HERMES_AGENT_SECRET"),
-        dashboard_upstream_url=env("DASHBOARD_UPSTREAM_URL", "http://127.0.0.1:9120").rstrip("/"),
-        base_url=normalize_prefix(env("BASE_URL")),
+        session_secret=env("HERMES_AUTH_SESSION_SECRET"),
+        agents_by_id=agents_by_id,
+        agents_by_user=agents_by_user,
     )
 
 
 def configuration_complete(config):
     required_values = (
-        config.allowed_user,
         config.user_domain,
         config.ldap_host,
         config.ldap_base_dn,
         config.session_secret,
-        config.dashboard_upstream_url,
     )
-    return all(required_values)
+    return all(required_values) and bool(config.agents_by_id)
 
 
 def session_serializer(config):
     return URLSafeTimedSerializer(config.session_secret, salt="hermes-dashboard-auth")
-
-
-def request_prefix(request, config):
-    forwarded_prefix = request.headers.get("x-forwarded-prefix", "")
-    return normalize_prefix(forwarded_prefix) or config.base_url or "/"
 
 
 def client_host(request):
@@ -129,13 +154,12 @@ def client_host(request):
     return getattr(client, "host", "-") or "-"
 
 
-def log_auth_event(event, request, config, prefix, username="", auth_method="", detail=""):
+def log_auth_event(event, request, agent_id="", username="", auth_method="", detail=""):
     parts = [
         f"event={event}",
-        f"agent_id={config.agent_id or '-'}",
+        f"agent_id={agent_id or '-'}",
         f"method={getattr(request, 'method', '-')}",
         f"path={getattr(getattr(request, 'url', None), 'path', '-')}",
-        f"prefix={prefix or '/'}",
         f"remote={client_host(request)}",
     ]
     if username:
@@ -147,24 +171,6 @@ def log_auth_event(event, request, config, prefix, username="", auth_method="", 
     LOGGER.info(" ".join(parts))
 
 
-def parse_basic_auth(request):
-    authorization = request.headers.get("authorization", "")
-    scheme, _, encoded_value = authorization.partition(" ")
-    if scheme.lower() != "basic" or not encoded_value:
-        return None
-
-    try:
-        decoded = base64.b64decode(encoded_value, validate=True).decode("utf-8")
-    except (binascii.Error, UnicodeDecodeError):
-        return None
-
-    username, separator, password = decoded.partition(":")
-    if not separator:
-        return None
-
-    return username, password
-
-
 def user_search_filter(username, schema):
     escaped_username = escape_filter_chars(username)
     if "ad" in schema:
@@ -173,7 +179,6 @@ def user_search_filter(username, schema):
         attributes = ("uid", "cn", "mail")
 
     filters = tuple(f"({attribute}={escaped_username})" for attribute in attributes)
-
     return f"(|{''.join(filters)})"
 
 
@@ -216,7 +221,7 @@ def lookup_user_dn(username, config):
 
 
 def authenticate_credentials(username, password, config):
-    if username != config.allowed_user or not password:
+    if not username or not password:
         return False
 
     user_dn = lookup_user_dn(username, config)
@@ -230,15 +235,44 @@ def authenticate_credentials(username, password, config):
         return False
 
 
-def session_payload(username, prefix, config):
+def target_agent_id(path):
+    match = TARGET_PATH_PATTERN.fullmatch(path or "/")
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def normalized_path(path):
+    value = path or "/"
+    if not value.startswith("/"):
+        value = f"/{value}"
+    return value
+
+
+def request_path(request):
+    return normalized_path(request.url.path)
+
+
+def normalize_next_path(candidate, fallback="/"):
+    value = normalized_path(candidate or fallback)
+    if value.startswith("//"):
+        return fallback
+    if value in {LOGIN_PATH, LOGOUT_PATH}:
+        return fallback
+    if target_agent_id(value) is not None:
+        return fallback
+    return value
+
+
+def session_payload(username, agent_record, config):
     return {
         "allowed_user": username,
         "user_domain": config.user_domain,
-        "prefix": prefix or "/",
+        "agent_id": agent_record.agent_id,
     }
 
 
-def read_session(request, prefix, config):
+def read_session(request, config):
     cookie_value = request.cookies.get(SESSION_COOKIE)
     if not cookie_value or not config.session_secret:
         return None
@@ -248,37 +282,44 @@ def read_session(request, prefix, config):
     except (BadSignature, BadTimeSignature):
         return None
 
-    if payload.get("allowed_user") != config.allowed_user:
-        return None
     if payload.get("user_domain") != config.user_domain:
         return None
-    if payload.get("prefix") != (prefix or "/"):
+
+    username = payload.get("allowed_user")
+    agent_record = config.agents_by_id.get(payload.get("agent_id"))
+    if agent_record is None or agent_record.allowed_user != username or agent_record.status != "start":
         return None
 
-    return payload.get("allowed_user")
+    return {
+        "username": username,
+        "agent": agent_record,
+    }
 
 
-def challenge_response(config):
-    return PlainTextResponse(
-        "Dashboard authentication required.",
-        status_code=401,
-        headers={
-            "Cache-Control": "no-store",
-            "WWW-Authenticate": f'Basic realm="{config.realm}", charset="UTF-8"',
-        },
-    )
+def find_assigned_agent(config, username):
+    return config.agents_by_user.get((username or "").strip())
 
 
-def configuration_required_response(config):
-    agent_label = escape(config.agent_name or f"Agent {config.agent_id}")
-    html = f"""<!doctype html>
+def login_target_agent(config, username, explicit_agent_id=None):
+    agent_record = find_assigned_agent(config, username)
+    if agent_record is None:
+        return None
+    if explicit_agent_id is not None and agent_record.agent_id != explicit_agent_id:
+        return None
+    if agent_record.status != "start":
+        return None
+    return agent_record
+
+
+def configuration_required_response():
+    html = """<!doctype html>
 <html lang=\"en\">
   <head>
     <meta charset=\"utf-8\" />
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>{agent_label} dashboard requires configuration</title>
+    <title>Hermes dashboard access requires configuration</title>
     <style>
-      body {{
+      body {
         margin: 0;
         min-height: 100vh;
         display: grid;
@@ -286,31 +327,220 @@ def configuration_required_response(config):
         padding: 2rem;
         background: #f4efe5;
         color: #1f2933;
-        font-family: "IBM Plex Sans", sans-serif;
-      }}
-      main {{
+        font-family: \"IBM Plex Sans\", sans-serif;
+      }
+      main {
         max-width: 40rem;
         background: rgba(255, 255, 255, 0.88);
         border: 1px solid rgba(31, 41, 51, 0.12);
         border-radius: 1rem;
         padding: 2rem;
         box-shadow: 0 1.5rem 3rem rgba(31, 41, 51, 0.12);
-      }}
-      h1 {{ margin-top: 0; font-size: 1.75rem; }}
-      p {{ line-height: 1.6; }}
-      code {{ font-family: "IBM Plex Mono", monospace; }}
+      }
+      h1 { margin-top: 0; font-size: 1.75rem; }
+      p { line-height: 1.6; }
+      code { font-family: \"IBM Plex Mono\", monospace; }
     </style>
   </head>
   <body>
     <main>
       <h1>Dashboard access is not configured</h1>
-      <p>{agent_label} is published, but dashboard authentication is still missing required settings.</p>
-      <p>Select a shared <code>user_domain</code> and an agent <code>allowed_user</code> in the module settings, then save the configuration to enable access.</p>
+      <p>The shared auth service is published, but dashboard authentication is still missing required settings.</p>
+      <p>Select a shared <code>user_domain</code> and one unique <code>allowed_user</code> per agent in the module settings, then save the configuration to enable access.</p>
     </main>
   </body>
 </html>
 """
     return HTMLResponse(html, status_code=503, headers={"Cache-Control": "no-store"})
+
+
+def login_form_response(config, request, error_message="", username="", explicit_agent_id=None, next_path="/"):
+    target_record = config.agents_by_id.get(explicit_agent_id) if explicit_agent_id is not None else None
+    title = target_record.display_name if target_record is not None else "Hermes dashboard login"
+    heading = f"Sign in to {target_record.display_name}" if target_record is not None else "Sign in to your Hermes dashboard"
+    helper = (
+        f"Authenticate to access {target_record.display_name}."
+        if target_record is not None
+        else "Authenticate with your assigned account to access the dashboard routed to your session."
+    )
+    error_html = f"<p class=\"error\">{escape(error_message)}</p>" if error_message else ""
+    action_path = request_path(request) if explicit_agent_id is not None else LOGIN_PATH
+    html = f"""<!doctype html>
+<html lang=\"en\">
+  <head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>{escape(title)}</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 2rem;
+        background:
+          radial-gradient(circle at top left, rgba(207, 177, 135, 0.28), transparent 34%),
+          linear-gradient(145deg, #efe6d7 0%, #f8f4ed 48%, #e4ddd0 100%);
+        color: #1f2933;
+        font-family: \"IBM Plex Sans\", sans-serif;
+      }}
+      main {{
+        width: min(100%, 28rem);
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid rgba(31, 41, 51, 0.12);
+        border-radius: 1.25rem;
+        padding: 2rem;
+        box-shadow: 0 1.5rem 3rem rgba(31, 41, 51, 0.12);
+      }}
+      h1 {{ margin: 0 0 0.75rem; font-size: 1.75rem; }}
+      p {{ line-height: 1.6; margin: 0 0 1rem; }}
+      label {{ display: block; margin-top: 1rem; font-weight: 600; }}
+      input {{
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 0.35rem;
+        padding: 0.8rem 0.95rem;
+        border-radius: 0.75rem;
+        border: 1px solid rgba(31, 41, 51, 0.18);
+        font: inherit;
+      }}
+      button {{
+        margin-top: 1.25rem;
+        width: 100%;
+        padding: 0.9rem 1rem;
+        border: 0;
+        border-radius: 999px;
+        background: #205493;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }}
+      .error {{
+        margin-top: 1rem;
+        padding: 0.85rem 1rem;
+        border-radius: 0.75rem;
+        background: rgba(176, 18, 18, 0.08);
+        color: #7f1d1d;
+      }}
+      .meta {{ color: #52606d; font-size: 0.95rem; }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>{escape(heading)}</h1>
+      <p>{escape(helper)}</p>
+      {error_html}
+      <form method=\"post\" action=\"{escape(action_path)}\">
+        <input type=\"hidden\" name=\"next\" value=\"{escape(next_path)}\" />
+        <label for=\"username\">Username</label>
+        <input id=\"username\" name=\"username\" type=\"text\" autocomplete=\"username\" value=\"{escape(username)}\" required />
+        <label for=\"password\">Password</label>
+        <input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required />
+        <button type=\"submit\">Sign in</button>
+      </form>
+      <p class=\"meta\">Requests are routed to the dashboard assigned to the authenticated session.</p>
+    </main>
+  </body>
+</html>
+"""
+    return HTMLResponse(html, status_code=401 if error_message else 200, headers={"Cache-Control": "no-store"})
+
+
+def status_page_response(session_data, current_path):
+    agent_record = session_data["agent"]
+    helper = "Your session will proxy dashboard requests on this host to the assigned agent."
+    current_target = target_agent_id(current_path)
+    if current_target is not None and current_target != agent_record.agent_id:
+        helper = f"Your active session is assigned to {agent_record.display_name}; this page only manages that session."
+    html = f"""<!doctype html>
+<html lang=\"en\">
+  <head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>{escape(agent_record.display_name)} session</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 2rem;
+        background: linear-gradient(160deg, #f3efe8 0%, #e8e0d2 100%);
+        color: #1f2933;
+        font-family: \"IBM Plex Sans\", sans-serif;
+      }}
+      main {{
+        width: min(100%, 28rem);
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid rgba(31, 41, 51, 0.12);
+        border-radius: 1.25rem;
+        padding: 2rem;
+        box-shadow: 0 1.5rem 3rem rgba(31, 41, 51, 0.12);
+      }}
+      h1 {{ margin-top: 0; font-size: 1.7rem; }}
+      p {{ line-height: 1.6; }}
+      .actions {{ display: flex; gap: 0.75rem; margin-top: 1.5rem; }}
+      a, button {{
+        flex: 1 1 auto;
+        text-align: center;
+        padding: 0.9rem 1rem;
+        border-radius: 999px;
+        font: inherit;
+        font-weight: 600;
+        text-decoration: none;
+      }}
+      a {{ background: #205493; color: #fff; }}
+      button {{ border: 0; background: #9f2d20; color: #fff; cursor: pointer; }}
+      form {{ flex: 1 1 auto; margin: 0; }}
+      code {{ font-family: \"IBM Plex Mono\", monospace; }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Signed in to {escape(agent_record.display_name)}</h1>
+      <p>Authenticated as <code>{escape(session_data['username'])}</code>.</p>
+      <p>{escape(helper)}</p>
+      <div class=\"actions\">
+        <a href=\"/\">Open dashboard</a>
+        <form method=\"post\" action=\"{LOGOUT_PATH}\">
+          <input type=\"hidden\" name=\"return_to\" value=\"{escape(current_path)}\" />
+          <button type=\"submit\">Log out</button>
+        </form>
+      </div>
+    </main>
+  </body>
+</html>
+"""
+    return HTMLResponse(html, status_code=200, headers={"Cache-Control": "no-store"})
+
+
+def unauthorized_response():
+    return PlainTextResponse(
+        "Dashboard authentication required.",
+        status_code=401,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def parse_form_body(request):
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if content_type != "application/x-www-form-urlencoded":
+        return {}
+
+    try:
+        decoded_body = (await request.body()).decode("utf-8")
+    except UnicodeDecodeError:
+        return {}
+
+    return {key: values[-1] if values else "" for key, values in parse_qs(decoded_body, keep_blank_values=True).items()}
+
+
+def request_next_path(request):
+    path = request_path(request)
+    if request.url.query:
+        return f"{path}?{request.url.query}"
+    return path
 
 
 def upstream_headers(request):
@@ -331,94 +561,28 @@ def upstream_headers(request):
     if filtered_cookies:
         forwarded_headers["Cookie"] = "; ".join(filtered_cookies)
 
+    forwarded_headers["X-Forwarded-Proto"] = request.headers.get("x-forwarded-proto", "http")
+    forwarded_headers["X-Forwarded-Host"] = request.headers.get("x-forwarded-host", request.headers.get("host", ""))
+    forwarded_headers["X-Forwarded-For"] = client_host(request)
     return forwarded_headers
 
 
-def response_headers(upstream_response, prefix):
+def response_headers(upstream_response, upstream_base_url):
     headers = {}
     for name, value in upstream_response.headers.items():
         lower_name = name.lower()
         if lower_name in HOP_BY_HOP_HEADERS or lower_name == "content-length":
             continue
-        if lower_name == "location" and value.startswith("/") and prefix:
-            headers[name] = f"{prefix}{value}"
+        if lower_name == "location" and value.startswith(upstream_base_url):
+            rewritten = value[len(upstream_base_url) :]
+            headers[name] = rewritten or "/"
             continue
         headers[name] = value
     return headers
 
 
-app = FastAPI(lifespan=lifespan)
-
-
-@app.get("/health")
-async def health():
-    return JSONResponse({"status": "ok"})
-
-
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
-async def proxy(path: str, request: Request):
-    del path
-    config = load_config()
-    prefix = request_prefix(request, config)
-
-    if not configuration_complete(config):
-        return configuration_required_response(config)
-
-    authenticated_user = read_session(request, prefix, config)
-    session_is_new = False
-    if authenticated_user is None:
-        credentials = parse_basic_auth(request)
-        attempted_user = credentials[0] if credentials else ""
-        log_auth_event(
-            "auth_attempt",
-            request,
-            config,
-            prefix,
-            username=attempted_user,
-            auth_method="basic" if credentials else "none",
-        )
-        if credentials is None:
-            log_auth_event(
-                "auth_failed",
-                request,
-                config,
-                prefix,
-                auth_method="none",
-                detail="missing_basic_auth",
-            )
-            return challenge_response(config)
-        if not authenticate_credentials(credentials[0], credentials[1], config):
-            log_auth_event(
-                "auth_failed",
-                request,
-                config,
-                prefix,
-                username=attempted_user,
-                auth_method="basic",
-                detail="invalid_credentials",
-            )
-            return challenge_response(config)
-        authenticated_user = credentials[0]
-        session_is_new = True
-        log_auth_event(
-            "auth_success",
-            request,
-            config,
-            prefix,
-            username=authenticated_user,
-            auth_method="basic",
-        )
-    else:
-        log_auth_event(
-            "auth_success",
-            request,
-            config,
-            prefix,
-            username=authenticated_user,
-            auth_method="session",
-        )
-
-    upstream_url = f"{config.dashboard_upstream_url}{request.url.path}"
+async def proxy_to_agent(agent_record, request):
+    upstream_url = f"{agent_record.upstream_url}{request.url.path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
 
@@ -429,24 +593,133 @@ async def proxy(path: str, request: Request):
         content=await request.body(),
     )
 
-    response = Response(
+    return Response(
         content=upstream_response.content,
         status_code=upstream_response.status_code,
-        headers=response_headers(upstream_response, prefix),
+        headers=response_headers(upstream_response, agent_record.upstream_url),
     )
 
-    if session_is_new:
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/health")
+async def health():
+    return JSONResponse({"status": "ok"})
+
+
+@app.post(LOGOUT_PATH)
+async def logout(request: Request):
+    form_data = await parse_form_body(request)
+    response = RedirectResponse(
+        normalize_next_path(form_data.get("return_to"), "/"),
+        status_code=303,
+    )
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+async def proxy(path: str, request: Request):
+    del path
+    config = load_config()
+    current_path = request_path(request)
+    explicit_agent = target_agent_id(current_path)
+
+    if not configuration_complete(config):
+        return configuration_required_response()
+
+    session_data = read_session(request, config)
+
+    if request.method == "POST" and (current_path == LOGIN_PATH or explicit_agent is not None):
+        form_data = await parse_form_body(request)
+        username = (form_data.get("username") or "").strip()
+        password = form_data.get("password") or ""
+        next_path = normalize_next_path(form_data.get("next"), "/")
+
+        log_auth_event(
+            "auth_attempt",
+            request,
+            agent_id=str(explicit_agent or ""),
+            username=username,
+            auth_method="form",
+        )
+
+        target_record = login_target_agent(config, username, explicit_agent_id=explicit_agent)
+        if target_record is None or not authenticate_credentials(username, password, config):
+            log_auth_event(
+                "auth_failed",
+                request,
+                agent_id=str(explicit_agent or ""),
+                username=username,
+                auth_method="form",
+                detail="invalid_credentials_or_assignment",
+            )
+            return login_form_response(
+                config,
+                request,
+                error_message="Invalid credentials or no running dashboard is assigned to this account.",
+                username=username,
+                explicit_agent_id=explicit_agent,
+                next_path=next_path,
+            )
+
+        response = RedirectResponse(next_path, status_code=303)
         response.set_cookie(
             SESSION_COOKIE,
-            session_serializer(config).dumps(session_payload(authenticated_user, prefix, config)),
+            session_serializer(config).dumps(session_payload(username, target_record, config)),
             max_age=SESSION_TTL_SECONDS,
-            path=prefix or "/",
+            path="/",
             httponly=True,
             samesite="lax",
             secure=request.headers.get("x-forwarded-proto", "http") == "https",
         )
+        log_auth_event(
+            "auth_success",
+            request,
+            agent_id=str(target_record.agent_id),
+            username=username,
+            auth_method="form",
+        )
+        return response
 
-    return response
+    if explicit_agent is not None:
+        if session_data is not None:
+            return status_page_response(session_data, current_path)
+        return login_form_response(config, request, explicit_agent_id=explicit_agent, next_path="/")
+
+    if current_path == LOGIN_PATH:
+        if session_data is not None:
+            return RedirectResponse("/", status_code=303)
+        return login_form_response(
+            config,
+            request,
+            next_path=normalize_next_path(request_next_path(request), "/"),
+        )
+
+    if session_data is None:
+        if request.method not in {"GET", "HEAD"}:
+            log_auth_event(
+                "auth_failed",
+                request,
+                auth_method="session",
+                detail="missing_session",
+            )
+            return unauthorized_response()
+        return login_form_response(
+            config,
+            request,
+            next_path=normalize_next_path(request_next_path(request), "/"),
+        )
+
+    log_auth_event(
+        "auth_success",
+        request,
+        agent_id=str(session_data["agent"].agent_id),
+        username=session_data["username"],
+        auth_method="session",
+    )
+    return await proxy_to_agent(session_data["agent"], request)
 
 
 if __name__ == "__main__":

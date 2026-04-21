@@ -898,6 +898,20 @@ export default {
     normalizeAllowedUser(value) {
       return (value || "").trim();
     },
+    allowedUserInUse(value, excludedAgentId = null) {
+      const normalizedAllowedUser = this.normalizeAllowedUser(value);
+      if (!normalizedAllowedUser) {
+        return false;
+      }
+
+      return this.agents.some((agentData) => {
+        if (excludedAgentId !== null && agentData.id === excludedAgentId) {
+          return false;
+        }
+
+        return this.normalizeAllowedUser(agentData.allowed_user) === normalizedAllowedUser;
+      });
+    },
     normalizeUserDomains(domains) {
       return domains
         .map((domainData) => {
@@ -1113,6 +1127,15 @@ export default {
             this.focusElement("createAgentAllowedUser");
             isValidationOk = false;
           }
+        } else if (this.allowedUserInUse(this.createAgentForm.allowed_user)) {
+          this.error.createAgentAllowedUser = this.$t(
+            "settings.allowed_user_invalid"
+          );
+
+          if (isValidationOk) {
+            this.focusElement("createAgentAllowedUser");
+            isValidationOk = false;
+          }
         }
       }
 
@@ -1155,6 +1178,17 @@ export default {
         } else if (!this.normalizeAllowedUser(this.editAgentForm.allowed_user)) {
           this.error.editAgentAllowedUser = this.$t(
             "settings.allowed_user_required"
+          );
+
+          if (isValidationOk) {
+            this.focusElement("editAgentAllowedUser");
+            isValidationOk = false;
+          }
+        } else if (
+          this.allowedUserInUse(this.editAgentForm.allowed_user, this.agentToEdit.id)
+        ) {
+          this.error.editAgentAllowedUser = this.$t(
+            "settings.allowed_user_invalid"
           );
 
           if (isValidationOk) {

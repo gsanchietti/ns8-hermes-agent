@@ -8,9 +8,13 @@ from pathlib import Path
 
 ENVIRONMENT_FILE = Path("environment")
 SHARED_SECRETS_ENVFILE = Path("secrets.env")
+AUTHPROXY_ENVFILE = Path("authproxy.env")
+AUTHPROXY_SECRETS_ENVFILE = Path("authproxy_secrets.env")
+AUTHPROXY_AGENTS_FILE = Path("authproxy_agents.json")
 AGENTS_DIR = Path("agents")
 SOUL_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates" / "SOUL"
 MAX_AGENTS = 30
+RESERVED_TCP_PORTS = MAX_AGENTS + 1
 
 ALLOWED_ROLES = (
     "default",
@@ -28,6 +32,7 @@ AGENT_DIR_PATTERN = re.compile(r"^\d+$")
 AGENT_ENVFILE_PATTERN = re.compile(r"^agent_(\d+)\.env$")
 AGENT_SECRETS_ENVFILE_PATTERN = re.compile(r"^agent_(\d+)_secrets\.env$")
 AGENT_SECRET_KEY = "HERMES_AGENT_SECRET"
+AUTH_SESSION_SECRET_KEY = "HERMES_AUTH_SESSION_SECRET"
 SMTP_PUBLIC_KEYS = (
     "SMTP_ENABLED",
     "SMTP_HOST",
@@ -149,6 +154,17 @@ def route_instance_name(agent_id, module_id=None, shared_environment=None):
 
     return f"{module_value}-hermes-agent-{agent_id}"
 
+
+def shared_route_instance_name(module_id=None, shared_environment=None):
+    if shared_environment is None:
+        shared_environment = os.environ
+
+    module_value = module_id or shared_environment.get("MODULE_ID") or os.getenv("MODULE_ID")
+    if not module_value:
+        raise ValueError("MODULE_ID is required to derive route instance names")
+
+    return f"{module_value}-hermes-auth"
+
 def parse_tcp_ports_range(port_range):
     normalized_range = (port_range or "").strip()
     if not normalized_range:
@@ -176,7 +192,7 @@ def build_tcp_ports_environment(start_port, end_port, ports_demand):
     return environment
 
 
-def ensure_tcp_ports_environment(shared_environment=None, ports_demand=MAX_AGENTS, allocate_ports=None):
+def ensure_tcp_ports_environment(shared_environment=None, ports_demand=RESERVED_TCP_PORTS, allocate_ports=None):
     if shared_environment is None:
         shared_environment = os.environ
 
@@ -222,10 +238,10 @@ def agent_dashboard_host_port(agent_id, shared_environment=None):
         shared_environment = os.environ
 
     start_port, end_port = parse_tcp_ports_range(shared_environment.get(TCP_PORTS_RANGE_ENV))
-    if end_port - start_port + 1 < MAX_AGENTS:
-        raise ValueError(f"{TCP_PORTS_RANGE_ENV} must contain at least {MAX_AGENTS} ports")
+    if end_port - start_port + 1 < RESERVED_TCP_PORTS:
+        raise ValueError(f"{TCP_PORTS_RANGE_ENV} must contain at least {RESERVED_TCP_PORTS} ports")
 
-    return start_port + agent_id - 1
+    return start_port + agent_id
 
 
 def read_agents_from_state():
