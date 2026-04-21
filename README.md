@@ -13,7 +13,7 @@
 Install the module with
 
 ```bash
-add-module ghcr.io/nethserver/hermes-agent:latest 1
+add-module ghcr.io/stell0/hermes-agent:latest 1
 ```
 Configure at least one agent from the UI or with:
 
