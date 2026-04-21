@@ -20,6 +20,8 @@ if "user_domain" in request:
 else:
     user_domain = normalize_user_domain(os.getenv(USER_DOMAIN_ENV))
 
+# An empty binding list intentionally unbinds any previously selected NS8
+# account domain when the module clears USER_DOMAIN.
 domain_list = [user_domain] if user_domain else []
 
 if not agent.bind_user_domains(domain_list):

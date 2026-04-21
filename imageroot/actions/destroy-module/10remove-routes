@@ -22,6 +22,8 @@ if traefik_agent_id is None:
 known_agent_ids = list_known_agent_ids()
 cleanup_lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_ENV))
 
+# The first delete tears down shared certificate state; the remaining requests
+# only remove per-agent path routes from the shared host.
 for index, agent_id in enumerate(known_agent_ids):
     route_request = {"instance": route_instance_name(agent_id, module_id=os.environ.get("MODULE_ID"))}
     if cleanup_lets_encrypt and index == 0:

@@ -21,6 +21,8 @@ def run(command, check=True):
 
 
 def stop_disable_agent(agent_id):
+    # Reset the whole runtime footprint for stopped agents so systemd can
+    # recreate the declared one-agent/one-pod layout on the next start.
     run(["systemctl", "--user", "disable", "--now", f"hermes@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "stop", f"hermes-pod@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "disable", "--now", f"hermes-agent@{agent_id}.service"], check=False)
@@ -36,6 +38,8 @@ json.load(sys.stdin)
 for agent_data in read_agents_from_state():
     agent_id = agent_data["id"]
     if agent_data["status"] == "start":
+        # Stop first so the unit rebuilds the pod and containers from the fresh
+        # generated env files instead of reusing stale runtime state.
         run(["systemctl", "--user", "enable", f"hermes@{agent_id}.service"])
         run(["systemctl", "--user", "stop", f"hermes@{agent_id}.service"], check=False)
         run(["systemctl", "--user", "stop", f"hermes-pod@{agent_id}.service"], check=False)

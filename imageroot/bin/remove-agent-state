@@ -32,6 +32,8 @@ def ensure_volume_removed(agent_id):
 
 
 def remove_agent_state(agent_id):
+    # Remove all generated runtime artifacts for an agent ID so future
+    # reconfiguration starts from clean metadata, env files, and home volume.
     ensure_volume_removed(agent_id)
 
     for path in (Path(f"agent_{agent_id}.env"), Path(f"agent_{agent_id}_secrets.env")):

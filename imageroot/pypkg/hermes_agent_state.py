@@ -62,12 +62,15 @@ def env_to_bool(value):
 def bool_to_env(value):
     return "true" if value else "false"
 
+
 def ensure_private_directory(path):
     directory_path = Path(path)
 
     if directory_path in {Path("."), Path("/")}:
         return directory_path
 
+    # Walk each path segment without following symlinks so secrets and metadata
+    # are never written through attacker-controlled filesystem indirections.
     current_path = Path(directory_path.anchor) if directory_path.is_absolute() else Path(".")
     path_parts = directory_path.parts[1:] if directory_path.is_absolute() else directory_path.parts
 
@@ -100,6 +103,8 @@ def write_private_textfile(path, content, mode=0o600):
     except FileNotFoundError:
         file_stat = None
 
+    # Replace existing files atomically, but reject symlinks and special files
+    # so private state cannot be redirected outside the managed tree.
     if file_stat is not None and (stat.S_ISLNK(file_stat.st_mode) or not stat.S_ISREG(file_stat.st_mode)):
         raise ValueError(f"unsafe file path: {file_path}")
 
@@ -181,6 +186,8 @@ def ensure_tcp_ports_environment(shared_environment=None, ports_demand=MAX_AGENT
         start_port = None
         end_port = None
 
+    # Reuse an existing large-enough range to keep per-agent dashboard ports
+    # stable across reconfiguration; only allocate a new range as a fallback.
     if start_port is not None and end_port is not None and end_port - start_port + 1 >= ports_demand:
         expected_environment = build_tcp_ports_environment(
             start_port=start_port,
@@ -223,6 +230,8 @@ def agent_dashboard_host_port(agent_id, shared_environment=None):
 
 def read_agents_from_state():
     def validate_agent_metadata(agent_data, index):
+        # Metadata is written per agent on disk, so validate every record here
+        # before the action layer turns it into systemd, route, or env changes.
         extra_fields = sorted(set(agent_data) - {"id", "name", "role", "status", "allowed_user"})
         if extra_fields:
             raise ValueError(
@@ -293,6 +302,8 @@ def list_known_agent_ids():
         if 1 <= agent_id <= MAX_AGENTS:
             ids.add(agent_id)
 
+    # Union metadata directories with generated env files so cleanup steps still
+    # see IDs that were only partially removed by an earlier failed run.
     if AGENTS_DIR.exists():
         for path in AGENTS_DIR.iterdir():
             if path.is_dir() and AGENT_DIR_PATTERN.fullmatch(path.name):

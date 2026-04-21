@@ -11,6 +11,8 @@ from hermes_agent_state import read_agents_from_state
 
 
 def runtime_status(agent_id):
+    # Report live systemd state only; the configured desired status remains in
+    # per-agent metadata and is reconciled by configure-module.
     result = subprocess.run(
         ["systemctl", "--user", "is-active", "--quiet", f"hermes@{agent_id}.service"],
         check=False,

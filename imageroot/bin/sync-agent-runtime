@@ -52,6 +52,8 @@ def agent_by_id(agent_id):
 
 
 def build_agent_public_env(agent_data, shared_environment):
+    # Containers only consume generated per-agent env files, so copy the shared
+    # public settings they need and overlay agent-specific fields here.
     env_data = {
         "AGENT_ID": str(agent_data["id"]),
         "AGENT_NAME": agent_data["name"],
@@ -82,6 +84,8 @@ def build_agent_public_env(agent_data, shared_environment):
 
 
 def build_agent_secrets(existing_agent_secrets, shared_secrets, shared_environment):
+    # Preserve each agent secret across regenerations while still projecting the
+    # current module-wide SMTP and LDAP bind credentials into the private file.
     env_data = {
         AGENT_SECRET_KEY: existing_agent_secrets.get(AGENT_SECRET_KEY) or generate_secret(),
     }
@@ -103,6 +107,8 @@ def sync_agent_runtime_files(agent_id=None):
     agent_data_list = [agent_by_id(agent_id)] if agent_id is not None else read_agents_from_state()
 
     for agent_data in agent_data_list:
+        # Regenerate both files from the canonical shared state so systemd unit
+        # restarts always see a complete, current runtime snapshot.
         agent.write_envfile(
             Path(f"agent_{agent_data['id']}.env"),
             build_agent_public_env(agent_data, shared_environment),

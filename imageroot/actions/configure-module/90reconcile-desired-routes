@@ -39,6 +39,9 @@ def delete_agent_route(agent_id, traefik_agent_id, lets_encrypt_cleanup=False):
 
 def upsert_agent_route(agent_id, base_virtualhost, lets_encrypt, traefik_agent_id, lets_encrypt_cleanup=False):
     path = f"/hermes-{agent_id}"
+    # The dashboard is published on one shared host and distinguished by path
+    # prefixes, so Traefik must strip the prefix while forwarding it back via
+    # X-Forwarded-Prefix for applications that build absolute URLs.
     route_request = {
         "instance": route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
         "url": f"http://127.0.0.1:{agent_dashboard_host_port(agent_id, os.environ)}",
@@ -84,6 +87,8 @@ if traefik_agent_id is None:
         sys.exit(0)
     raise ValueError("traefik@node route agent not found")
 
+# Only one request should ask Traefik to clean up certificate state; the other
+# route operations in the same batch only add, update, or delete path entries.
 host_changed = bool(previous_base_virtualhost) and previous_base_virtualhost != base_virtualhost
 cleanup_previous_host = host_changed and previous_lets_encrypt
 cleanup_disable_lets_encrypt = bool(base_virtualhost) and not host_changed and previous_lets_encrypt and not lets_encrypt

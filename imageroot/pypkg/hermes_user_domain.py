@@ -71,6 +71,8 @@ def public_runtime_env(user_domain):
         return {}
 
     ldap_host = domain_details.get("host") or ""
+    # ldapproxy often reports loopback for local domains, but rootless Podman
+    # containers inside the private pod must reach the host side via 10.0.2.2.
     if ldap_host in {"127.0.0.1", "localhost"}:
         ldap_host = PODMAN_LOOPBACK_HOST
 
