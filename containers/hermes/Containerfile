@@ -18,4 +18,9 @@ RUN pip install --no-cache-dir --break-system-packages \
 COPY entrypoint.sh /entrypoint.sh
 RUN apt-get clean autoclean && apt-get autoremove --yes && rm -rf /var/lib/{apt,dpkg,cache,log}/* && touch /var/lib/dpkg/status
 
+# Build dashboard web interface
+RUN source /opt/hermes/.venv/bin/activate && \
+    pip install hermes-agent[web] \
+    && cd /opt/hermes/web && npm install && npm run build
+
 ENTRYPOINT [ "/entrypoint.sh" ]
