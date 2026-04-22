@@ -21,8 +21,7 @@ RUN pip install --no-cache-dir --break-system-packages \
 
 COPY entrypoint.sh /entrypoint.sh
 
-RUN /opt/hermes/.venv/bin/pip install hermes-agent[web] && \
-    cd /opt/hermes/web && npm install && npm run build
+RUN cd /opt/hermes/web && npm install && npm run build
 
 RUN apt-get clean autoclean && apt-get autoremove --yes && rm -rf /var/lib/{apt,dpkg,cache,log}/* && touch /var/lib/dpkg/status
 
