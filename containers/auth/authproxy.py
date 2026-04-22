@@ -68,6 +68,13 @@ def env(name, default=""):
     return (os.getenv(name, default) or "").strip()
 
 
+def env_flag(name, default=False):
+    value = env(name)
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def configure_logging():
     if LOGGER.handlers:
         return
@@ -169,6 +176,16 @@ def log_auth_event(event, request, agent_id="", username="", auth_method="", det
     if detail:
         parts.append(f"detail={detail}")
     LOGGER.info(" ".join(parts))
+
+
+def debug_enabled():
+    return env_flag("DEBUG") or env_flag("AUTH_PROXY_DEBUG")
+
+
+def log_debug_event(event, request, agent_id="", detail=""):
+    if not debug_enabled():
+        return
+    log_auth_event(event, request, agent_id=agent_id, detail=detail)
 
 
 def user_search_filter(username, schema):
@@ -523,6 +540,14 @@ def unauthorized_response():
     )
 
 
+def upstream_unavailable_response():
+    return PlainTextResponse(
+        "Assigned dashboard is temporarily unavailable.",
+        status_code=502,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def parse_form_body(request):
     content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if content_type != "application/x-www-form-urlencoded":
@@ -586,12 +611,28 @@ async def proxy_to_agent(agent_record, request):
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
 
-    upstream_response = await request.app.state.client.request(
-        method=request.method,
-        url=upstream_url,
-        headers=upstream_headers(request),
-        content=await request.body(),
+    log_debug_event(
+        "proxy_forward",
+        request,
+        agent_id=str(agent_record.agent_id),
+        detail=f"upstream_url={upstream_url}",
     )
+
+    try:
+        upstream_response = await request.app.state.client.request(
+            method=request.method,
+            url=upstream_url,
+            headers=upstream_headers(request),
+            content=await request.body(),
+        )
+    except httpx.RequestError as exc:
+        log_auth_event(
+            "proxy_failed",
+            request,
+            agent_id=str(agent_record.agent_id),
+            detail=f"{exc.__class__.__name__}:{exc}",
+        )
+        return upstream_unavailable_response()
 
     return Response(
         content=upstream_response.content,
@@ -625,6 +666,12 @@ async def proxy(path: str, request: Request):
     config = load_config()
     current_path = request_path(request)
     explicit_agent = target_agent_id(current_path)
+
+    log_debug_event(
+        "request_received",
+        request,
+        agent_id=str(explicit_agent or ""),
+    )
 
     if not configuration_complete(config):
         return configuration_required_response()

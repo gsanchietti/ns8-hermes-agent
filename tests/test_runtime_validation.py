@@ -367,6 +367,12 @@ def mocked_authproxy_dependencies():
             del exc_type, exc, tb
             return False
 
+    class FakeRequestError(Exception):
+        pass
+
+    class FakeReadError(FakeRequestError):
+        pass
+
     def escape_filter_chars(value):
         return value.replace("\\", r"\5c").replace("*", r"\2a").replace("(", r"\28").replace(")", r"\29")
 
@@ -378,6 +384,8 @@ def mocked_authproxy_dependencies():
     setattr(fastapi_responses_module, "RedirectResponse", FakeResponse)
     setattr(fastapi_responses_module, "Response", FakeResponse)
     setattr(httpx_module, "AsyncClient", FakeAsyncClient)
+    setattr(httpx_module, "RequestError", FakeRequestError)
+    setattr(httpx_module, "ReadError", FakeReadError)
     setattr(itsdangerous_module, "BadSignature", ValueError)
     setattr(itsdangerous_module, "BadTimeSignature", ValueError)
     setattr(itsdangerous_module, "URLSafeTimedSerializer", FakeSerializer)
@@ -542,6 +550,92 @@ class HermesAuthProxyTest(unittest.TestCase):
         self.assertIn("event=auth_attempt", logged_messages[0])
         self.assertIn("event=auth_failed", logged_messages[1])
         self.assertIn("detail=invalid_credentials_or_assignment", logged_messages[1])
+
+    def test_proxy_returns_502_when_upstream_read_fails(self):
+        authproxy = self.load_authproxy()
+        config = self.runtime_config(authproxy)
+
+        class FakeUpstreamClient:
+            async def request(self, *args, **kwargs):
+                del args, kwargs
+                raise authproxy.httpx.ReadError("connection reset by peer")
+
+        request = self.make_request(
+            FakeUpstreamClient(),
+            headers={"x-forwarded-proto": "https"},
+            cookies={
+                authproxy.SESSION_COOKIE: json.dumps(
+                    {
+                        "allowed_user": "alice",
+                        "user_domain": config.user_domain,
+                        "agent_id": 1,
+                    }
+                )
+            },
+            path="/",
+            method="GET",
+        )
+
+        with mock.patch.object(authproxy, "load_config", return_value=config), mock.patch.object(
+            authproxy.LOGGER, "info"
+        ) as log_info:
+            response = asyncio.run(authproxy.proxy("", request))
+
+        self.assertEqual(response.kwargs["status_code"], 502)
+        self.assertEqual(response.args[0], "Assigned dashboard is temporarily unavailable.")
+        logged_messages = [call.args[0] for call in log_info.call_args_list]
+        self.assertEqual(len(logged_messages), 2)
+        self.assertIn("event=auth_success", logged_messages[0])
+        self.assertIn("event=proxy_failed", logged_messages[1])
+        self.assertIn("agent_id=1", logged_messages[1])
+        self.assertIn("detail=FakeReadError:connection reset by peer", logged_messages[1])
+
+    def test_proxy_logs_received_and_forwarded_requests_when_debug_enabled(self):
+        authproxy = self.load_authproxy()
+        config = self.runtime_config(authproxy)
+
+        class FakeUpstreamResponse:
+            def __init__(self):
+                self.content = b"ok"
+                self.status_code = 200
+                self.headers = {}
+
+        class FakeUpstreamClient:
+            async def request(self, *args, **kwargs):
+                del args, kwargs
+                return FakeUpstreamResponse()
+
+        request = self.make_request(
+            FakeUpstreamClient(),
+            headers={"x-forwarded-proto": "https"},
+            cookies={
+                authproxy.SESSION_COOKIE: json.dumps(
+                    {
+                        "allowed_user": "alice",
+                        "user_domain": config.user_domain,
+                        "agent_id": 1,
+                    }
+                )
+            },
+            path="/api/status",
+            query="verbose=1",
+            method="GET",
+        )
+
+        with mock.patch.dict(os.environ, {"DEBUG": "1"}, clear=False), mock.patch.object(
+            authproxy, "load_config", return_value=config
+        ), mock.patch.object(authproxy.LOGGER, "info") as log_info:
+            response = asyncio.run(authproxy.proxy("api/status", request))
+
+        self.assertEqual(response.kwargs["status_code"], 200)
+        logged_messages = [call.args[0] for call in log_info.call_args_list]
+        self.assertEqual(len(logged_messages), 3)
+        self.assertIn("event=request_received", logged_messages[0])
+        self.assertIn("path=/api/status", logged_messages[0])
+        self.assertIn("event=auth_success", logged_messages[1])
+        self.assertIn("event=proxy_forward", logged_messages[2])
+        self.assertIn("agent_id=1", logged_messages[2])
+        self.assertIn("detail=upstream_url=http://10.0.2.2:20002/api/status?verbose=1", logged_messages[2])
 
 
 class HermesModuleStateTest(unittest.TestCase):
