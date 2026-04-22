@@ -2,8 +2,6 @@
 Description=Hermes gateway %i
 Requires=hermes-pod@%i.service
 After=hermes-pod@%i.service
-Wants=hermes-dashboard@%i.service
-Before=hermes-dashboard@%i.service
 
 [Service]
 Environment=PODMAN_SYSTEMD_UNIT=%n
@@ -31,7 +29,7 @@ ExecStart=runagent /usr/bin/podman run \
 		--volume hermes-agent-%i-home:/opt/data:z \
 		--tz=${TIMEZONE} \
 		${HERMES_AGENT_HERMES_IMAGE} \
-		gateway run
+		dashboard --host 0.0.0.0 --port 9120 --insecure --no-open
 ExecStop=/usr/bin/podman stop --ignore --time 10 hermes-%i
 ExecStopPost=-/usr/bin/podman rm --force hermes-%i
 TimeoutStopSec=70

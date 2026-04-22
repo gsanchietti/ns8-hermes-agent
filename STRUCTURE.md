@@ -34,7 +34,7 @@ This document maps the current layout.
 - `configure-module/70sync-agent-runtime`: regenerates `agent_<id>.env` and `agent_<id>_secrets.env`, including the live auth proxy LDAP runtime env, bind secrets, and per-agent `AGENT_ALLOWED_USER` when a shared `user_domain` is configured.
 - `configure-module/75seed-agent-home`: runs a one-shot Hermes container to seed strict first-write-only `/opt/data/SOUL.md` and `/opt/data/.env` content from checked-in templates.
 - `configure-module/80reload-systemd`: reloads the user systemd manager.
-- `configure-module/90reconcile-desired-routes`: creates, updates, or deletes per-agent Traefik routes for the desired configuration, including `lets_encrypt` cleanup when the shared host or TLS mode changes.
+- `configure-module/90reconcile-desired-routes`: creates, updates, or deletes the shared Traefik auth route for the desired configuration, and cleans retained legacy per-agent routes when the shared host or TLS mode changes.
 - `configure-module/95reconcile-agent-services`: enables, starts, stops, or disables per-agent services to match desired state.
 - `configure-module/validate-input.json`: input schema for the shared `base_virtualhost`, optional `user_domain`, shared `lets_encrypt`, and the Hermes `agents` payload including `allowed_user`.
 - `get-configuration/20read`: returns the shared dashboard virtualhost, shared `user_domain`, shared `lets_encrypt` setting, and configured agents with desired persisted status plus `allowed_user`.
@@ -72,8 +72,7 @@ This document maps the current layout.
 
 ### `imageroot/systemd/user/`
 
-- `hermes@.service`: primary gateway service per configured agent.
-- `hermes-dashboard@.service`: dashboard sidecar service per configured agent.
+- `hermes@.service`: combined Hermes dashboard and gateway service per configured agent.
 - `hermes-auth.service`: shared authentication proxy service for the shared virtualhost.
 - `hermes-pod@.service`: per-agent pod owner unit that publishes the dashboard port.
 
@@ -87,7 +86,7 @@ This document maps the current layout.
 - `containers/auth/Containerfile`: shared dashboard auth proxy image.
 - `containers/auth/authproxy.py`: FastAPI auth proxy that authenticates the shared virtualhost against LDAP, issues a host-wide session cookie, preserves the dashboard upstream `Authorization` header, replaces any inbound `X-Hermes-Authenticated-User` value with a trusted value derived from the authenticated session username, logs auth attempts and outcomes to stdout, and proxies authenticated sessions to the assigned dashboard upstream from `authproxy_agents.json`.
 - `containers/hermes/Containerfile`: Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:v2026.4.16` without a dashboard source patch helper.
-- `containers/hermes/entrypoint.sh`: wrapper entrypoint that bootstraps the Hermes home volume, exports the bundled `web_dist` when present, and then delegates to the upstream CLI.
+- `containers/hermes/entrypoint.sh`: wrapper entrypoint that bootstraps the Hermes home volume, exports the bundled `web_dist` when present, and can run the Hermes dashboard and gateway together inside one container.
 
 ## `ui/`
 
@@ -105,4 +104,4 @@ The embedded admin UI uses Vue 2 and Vue CLI.
 - `__init__.robot`: Robot Framework initialization file.
 - `kickstart.robot`: end-to-end module lifecycle checks.
 - `pythonreq.txt`: Python dependencies for the test runner.
-- `test_runtime_validation.py`: focused unit tests for state helpers, configure-time seeding, route wiring, named-volume lifecycle, and the per-agent pod runtime contract.
+- `test_runtime_validation.py`: focused unit tests for state helpers, configure-time seeding, route wiring, named-volume lifecycle, and the combined per-agent Hermes runtime contract.

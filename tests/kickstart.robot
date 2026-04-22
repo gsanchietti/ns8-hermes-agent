@@ -14,7 +14,7 @@ Check if hermes-agent is installed correctly
 
 Check if install starts with no agent runtime
     ${active_units} =    Execute Command    runuser -u ${module_id} -- bash -lc 'systemctl --user list-units "hermes@*.service" --state=active --no-legend | wc -l'
-    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^(hermes|hermes-dashboard)-" || true'
+    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^hermes-" || true'
     Should Be Equal    ${active_units}    0
     Should Be Equal    ${running_containers}    0
 
@@ -36,7 +36,7 @@ Check if one started agent creates one runtime
     ${rc} =    Execute Command    api-cli run module/${module_id}/configure-module --data '${configure_payload}'
     ...    return_rc=True  return_stdout=False
     Should Be Equal As Integers    ${rc}    0
-    ${settled_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'for attempt in $(seq 1 20); do systemctl --user is-active --quiet hermes@1.service && systemctl --user is-active --quiet hermes-dashboard@1.service && podman pod exists hermes-pod-1 && podman container exists hermes-1 && podman container exists hermes-dashboard-1 && podman exec hermes-1 test -f /opt/data/SOUL.md && podman exec hermes-1 test -f /opt/data/.env && exit 0; sleep 1; done; exit 1'
+    ${settled_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'for attempt in $(seq 1 20); do systemctl --user is-active --quiet hermes@1.service && podman pod exists hermes-pod-1 && podman container exists hermes-1 && podman exec hermes-1 test -f /opt/data/SOUL.md && podman exec hermes-1 test -f /opt/data/.env && exit 0; sleep 1; done; exit 1'
     ...    return_rc=True  return_stdout=False
     Should Be Equal As Integers    ${settled_rc}    0
     ${output} =    Execute Command    api-cli run module/${module_id}/get-configuration --data '{}'
@@ -52,12 +52,8 @@ Check if one started agent creates one runtime
     ${generated_env_count} =    Execute Command    find ${module_home} -maxdepth 8 -regextype posix-extended -regex '.*/agent_1(_secrets)?\.env' | wc -l
     ${service_output}  ${service_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'systemctl --user is-active hermes@1.service'
     ...    return_rc=True
-    ${dashboard_service_output}  ${dashboard_service_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'systemctl --user is-active hermes-dashboard@1.service'
-    ...    return_rc=True
-    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^(hermes|hermes-dashboard)-" || true'
+    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^hermes-" || true'
     ${container_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman container exists hermes-1'
-    ...    return_rc=True  return_stdout=False
-    ${dashboard_container_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman container exists hermes-dashboard-1'
     ...    return_rc=True  return_stdout=False
     ${pod_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman pod exists hermes-pod-1'
     ...    return_rc=True  return_stdout=False
@@ -84,13 +80,10 @@ Check if one started agent creates one runtime
     Should Be Equal    ${agent_status}    start
     Should Be Equal    ${agent_runtime_status}    start
     Should Be Equal As Integers    ${service_rc}    0
-    Should Be Equal As Integers    ${dashboard_service_rc}    0
-    Should Be Equal    ${running_containers}    2
+    Should Be Equal    ${running_containers}    1
     Should Be Equal As Integers    ${container_rc}    0
-    Should Be Equal As Integers    ${dashboard_container_rc}    0
     Should Be Equal As Integers    ${pod_rc}    0
     Should Be Equal    ${service_output}    active
-    Should Be Equal    ${dashboard_service_output}    active
     Should Be Equal    ${agent_name_env}    Foo Bar
     Should Be Equal    ${agent_role_env}    developer
     Should Not Be Empty    ${agent_dashboard_port}
@@ -114,12 +107,8 @@ Check if stopped agent disables runtime but keeps files
     ${agent_runtime_status} =    Evaluate    json.loads(r'''${runtime_output}''')['agents'][0]['runtime_status']    json
     ${service_output}  ${service_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'systemctl --user is-active hermes@1.service'
     ...    return_rc=True
-    ${dashboard_service_output}  ${dashboard_service_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'systemctl --user is-active hermes-dashboard@1.service'
-    ...    return_rc=True
-    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^(hermes|hermes-dashboard)-" || true'
+    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^hermes-" || true'
     ${container_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman container exists hermes-1'
-    ...    return_rc=True  return_stdout=False
-    ${dashboard_container_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman container exists hermes-dashboard-1'
     ...    return_rc=True  return_stdout=False
     ${pod_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman pod exists hermes-pod-1'
     ...    return_rc=True  return_stdout=False
@@ -129,15 +118,12 @@ Check if stopped agent disables runtime but keeps files
     Should Be Equal    ${lets_encrypt}    ${True}
     Should Be Equal    ${agent_runtime_status}    stop
     Should Not Be Equal As Integers    ${service_rc}    0
-    Should Not Be Equal As Integers    ${dashboard_service_rc}    0
     Should Be Equal    ${running_containers}    0
     Should Not Be Equal As Integers    ${container_rc}    0
-    Should Not Be Equal As Integers    ${dashboard_container_rc}    0
     Should Not Be Equal As Integers    ${pod_rc}    0
     Should Not Be Empty    ${agent_env}
     Should Be Equal    ${volume_name}    hermes-agent-1-home
     Should Be Equal    ${service_output}    inactive
-    Should Be Equal    ${dashboard_service_output}    inactive
 
 Check if deleting agent cleans runtime files
     ${configure_payload} =    Set Variable    {"agents":[]}
@@ -148,12 +134,8 @@ Check if deleting agent cleans runtime files
     ${agent_count} =    Evaluate    len(json.loads(r'''${output}''')['agents'])    json
     ${service_output}  ${service_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'systemctl --user is-active hermes@1.service'
     ...    return_rc=True
-    ${dashboard_service_output}  ${dashboard_service_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'systemctl --user is-active hermes-dashboard@1.service'
-    ...    return_rc=True
-    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^(hermes|hermes-dashboard)-" || true'
+    ${running_containers} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman ps --format "{{.Names}}" | grep -Ec "^hermes-" || true'
     ${container_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman container exists hermes-1'
-    ...    return_rc=True  return_stdout=False
-    ${dashboard_container_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman container exists hermes-dashboard-1'
     ...    return_rc=True  return_stdout=False
     ${pod_rc} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman pod exists hermes-pod-1'
     ...    return_rc=True  return_stdout=False
@@ -166,10 +148,8 @@ Check if deleting agent cleans runtime files
     ${route_output} =    Execute Command    api-cli run module/traefik1/get-route --data '{"instance":"${module_id}-hermes-agent-1"}'
     Should Be Equal As Integers    ${agent_count}    0
     Should Not Be Equal As Integers    ${service_rc}    0
-    Should Not Be Equal As Integers    ${dashboard_service_rc}    0
     Should Be Equal    ${running_containers}    0
     Should Not Be Equal As Integers    ${container_rc}    0
-    Should Not Be Equal As Integers    ${dashboard_container_rc}    0
     Should Not Be Equal As Integers    ${pod_rc}    0
     Should Be Empty    ${agent_env}
     Should Be Equal    ${generated_env_count}    0

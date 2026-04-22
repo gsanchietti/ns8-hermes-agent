@@ -20,7 +20,6 @@ STATE_PATH = ROOT / "imageroot" / "pypkg" / "hermes_agent_state.py"
 SYNC_PATH = ROOT / "imageroot" / "bin" / "sync-agent-runtime"
 REMOVE_AGENT_STATE_PATH = ROOT / "imageroot" / "bin" / "remove-agent-state"
 SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes@.service"
-DASHBOARD_SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes-dashboard@.service"
 AUTH_SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes-auth.service"
 POD_SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes-pod@.service"
 AUTH_CONTAINERFILE_PATH = ROOT / "containers" / "auth" / "Containerfile"
@@ -875,7 +874,6 @@ class HermesModuleStateTest(unittest.TestCase):
 
     def test_service_templates_keep_runtime_contract(self):
         service_template = SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
-        dashboard_template = DASHBOARD_SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
         auth_template = AUTH_SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
         pod_template = POD_SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
 
@@ -884,8 +882,6 @@ class HermesModuleStateTest(unittest.TestCase):
         self.assertNotIn("EnvironmentFile=-%S/state/hosts", service_template)
         self.assertNotIn("$PODMAN_ADD_HOST_ARGS", service_template)
         self.assertNotIn("--restart=always", service_template)
-        self.assertIn("Wants=hermes-dashboard@%i.service", service_template)
-        self.assertIn("Before=hermes-dashboard@%i.service", service_template)
         self.assertNotIn("hermes-auth@%i.service", service_template)
         self.assertIn("--pod hermes-pod-%i", service_template)
         self.assertIn("--name hermes-%i", service_template)
@@ -894,16 +890,9 @@ class HermesModuleStateTest(unittest.TestCase):
         self.assertIn("--env-file %S/state/agent_%i.env", service_template)
         self.assertIn("--env-file %S/state/agent_%i_secrets.env", service_template)
         self.assertIn("API_SERVER_ENABLED=true", service_template)
+        self.assertIn("dashboard --host 0.0.0.0 --port 9120 --insecure --no-open -- gateway run", service_template)
         self.assertIn("gateway run", service_template)
         self.assertNotIn("seed-agent-home", service_template)
-
-        self.assertIn("--name hermes-dashboard-%i", dashboard_template)
-        self.assertIn("--pod hermes-pod-%i", dashboard_template)
-        self.assertIn("GATEWAY_HEALTH_URL=http://127.0.0.1:8642", dashboard_template)
-        self.assertNotIn("BASE_URL=/hermes-%i", dashboard_template)
-        self.assertIn("--volume hermes-agent-%i-home:/opt/data:ro,z", dashboard_template)
-        self.assertIn("dashboard --host 127.0.0.1 --port 9120", dashboard_template)
-        self.assertNotIn("--publish ", dashboard_template)
 
         self.assertIn("Description=Hermes shared auth proxy", auth_template)
         self.assertIn("--name hermes-auth", auth_template)
@@ -1788,7 +1777,7 @@ class HermesModuleStateTest(unittest.TestCase):
                 agent_stub.bind_user_domains.assert_called_once_with([])
                 command_list = [call.args[0] for call in run_command.call_args_list]
                 self.assertEqual(
-                    command_list[:12],
+                    command_list[:10],
                     [
                         ["systemctl", "--user", "disable", "--now", "hermes@2.service"],
                         ["systemctl", "--user", "disable", "--now", "hermes-auth@2.service"],
@@ -1800,6 +1789,11 @@ class HermesModuleStateTest(unittest.TestCase):
                         ["podman", "rm", "--force", "hermes-auth-2"],
                         ["podman", "rm", "--force", "hermes-agent-2"],
                         ["runagent", "remove-agent-state", "--agent-id", "2"],
+                    ],
+                )
+                self.assertEqual(
+                    command_list[10:12],
+                    [
                         ["podman", "volume", "exists", "hermes-agent-2-home"],
                         ["podman", "volume", "rm", "--force", "hermes-agent-2-home"],
                     ],
