@@ -1,6 +1,10 @@
 FROM docker.io/nousresearch/hermes-agent:v2026.4.16
 LABEL org.opencontainers.image.title="hermes-agent-hermes"
 LABEL org.opencontainers.image.description="Thin wrapper around the upstream Hermes runtime image"
+
+ENV VIRTUAL_ENV=/opt/hermes/.venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
@@ -16,11 +20,13 @@ RUN pip install --no-cache-dir --break-system-packages \
     pdf2image
 
 COPY entrypoint.sh /entrypoint.sh
+
+RUN /opt/hermes/.venv/bin/pip install hermes-agent[web] && \
+    cd /opt/hermes/web && npm install && npm run build
+
 RUN apt-get clean autoclean && apt-get autoremove --yes && rm -rf /var/lib/{apt,dpkg,cache,log}/* && touch /var/lib/dpkg/status
 
 # Build dashboard web interface
-RUN source /opt/hermes/.venv/bin/activate && \
-    pip install hermes-agent[web] \
-    && cd /opt/hermes/web && npm install && npm run build
+RUN cd /opt/hermes/web && npm install && npm run build
 
 ENTRYPOINT [ "/entrypoint.sh" ]

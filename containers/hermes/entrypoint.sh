@@ -4,6 +4,7 @@ set -e
 
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
+VENV_BIN="${INSTALL_DIR}/.venv/bin"
 BUILT_WEB_DIST="${INSTALL_DIR}/hermes_cli/web_dist"
 
 source "${INSTALL_DIR}/.venv/bin/activate"
@@ -38,7 +39,9 @@ fi
 
 # Sync bundled skills (manifest-based so user edits are preserved)
 if [ -d "$INSTALL_DIR/skills" ]; then
-    python3 "$INSTALL_DIR/tools/skills_sync.py"
+    "$VENV_BIN/python" "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
-exec hermes "$@"
+"$VENV_BIN/hermes" gateway run &
+
+exec "$@"
