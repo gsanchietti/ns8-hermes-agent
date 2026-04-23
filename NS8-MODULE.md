@@ -27,10 +27,11 @@ The module publishes:
 - `ghcr.io/nethserver/hermes-agent`: the NS8 module image
 - `ghcr.io/nethserver/hermes-agent-auth`: the shared dashboard auth proxy image
 - `ghcr.io/nethserver/hermes-agent-hermes`: the Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:v2026.4.16`
+- `ghcr.io/nethserver/hermes-agent-socket`: the per-agent dashboard socket relay image
 
-`build-images.sh` builds all three images.
+`build-images.sh` builds all four images.
 
-The module image reserves 31 TCP ports and declares `cluster:accountconsumer traefik@node:routeadm node:portsadm` authorizations so it can bind one NS8 user domain, publish one shared auth route, keep one dashboard host port per possible agent, and repair the reserved port pool during upgrades.
+The module image reserves one TCP port and declares `cluster:accountconsumer traefik@node:routeadm node:portsadm` authorizations so it can bind one NS8 user domain, publish one shared auth route, and repair the shared auth listener reservation during upgrades.
 
 ## Input model
 
@@ -155,24 +156,27 @@ and these LDAP bind values into each generated `agent_<id>_secrets.env` file:
 The shipped units are:
 
 - `imageroot/systemd/user/hermes@.service`
+- `imageroot/systemd/user/hermes-socket@.service`
 - `imageroot/systemd/user/hermes-auth.service`
 - `imageroot/systemd/user/hermes-pod@.service`
 
 For agent `1`, the runtime looks like:
 
 - primary systemd service: `hermes@1.service`
-- shared auth proxy service: `hermes-auth.service`
+- per-agent socket relay service: `hermes-socket@1.service`
 - Podman pod: `hermes-pod-1`
 - Hermes container: `hermes-1`
-- Hermes auth proxy container: `hermes-auth`
+- dashboard socket relay container: `hermes-socket-1`
 - Hermes home named volume: `hermes-agent-1-home` mounted at `/opt/data`
-- published dashboard host port: `127.0.0.1:<allocated-port>` forwarded from the pod to dashboard port `9120`
 - shared auth listener: `127.0.0.1:${TCP_PORT}` forwarded to auth proxy port `9119`
+- dashboard socket: `%S/state/dashboard-sockets/agent-1.sock`, mounted into the auth container as `/sockets/agent-1.sock`
+- shared auth proxy service: `hermes-auth.service`
+- Hermes auth proxy container: `hermes-auth`
 
 Restart supervision is owned by `hermes@<id>.service` and `hermes-auth.service` with `Restart=on-failure`; the Podman pod and container launches do not set container-level restart policies.
 The services invoke Podman and the runtime creates one Podman-managed volume per agent.
 Managed `SOUL.md` and the default Hermes home `.env` are seeded in `configure-module/75seed-agent-home` before `hermes@<id>.service` starts. Later configure runs preserve existing files inside the volume.
-The Hermes container runs `hermes dashboard --host 0.0.0.0 --port 9120 --insecure --no-open` together with `hermes gateway run`, and `hermes-pod@.service` keeps publishing the dashboard listener on `9120` for the shared auth proxy. The shared auth service listens on `9119`, authenticates access against the shared `user_domain` plus the generated `authproxy_agents.json` registry, preserves the dashboard upstream `Authorization` header, injects a trusted `X-Hermes-Authenticated-User` header derived from the authenticated session username while ignoring any client-supplied value for that header, and logs auth attempts plus outcomes to stdout.
+The Hermes container runs `hermes dashboard --host 127.0.0.1 --port 9120 --insecure --no-open -- gateway run` inside the pod. `hermes-socket@.service` joins the same pod, relays `127.0.0.1:9120` onto `%S/state/dashboard-sockets/agent-<id>.sock`, and the shared auth service mounts `%S/state/dashboard-sockets:/sockets:z`. The shared auth service listens on `9119`, authenticates access against the shared `user_domain` plus the generated `authproxy_agents.json` registry, preserves the dashboard upstream `Authorization` header, injects a trusted `X-Hermes-Authenticated-User` header derived from the authenticated session username while ignoring any client-supplied value for that header, and logs auth attempts plus outcomes to stdout while proxying to each agent's `upstream_socket`.
 The Hermes wrapper no longer patches or rebuilds the upstream dashboard sources at container start.
 If `base_virtualhost` is set, Traefik forwards `https://<base_virtualhost>/` to the shared auth listener on `TCP_PORT` using the route instance `<module>-hermes-auth`.
 
@@ -195,7 +199,7 @@ Seeding is strict first-write only: later agent edits preserve existing `SOUL.md
 - `10initialize-state`: persists `TIMEZONE` and creates `agents/` plus `secrets.env`
 - `20discover-smarthost`: refreshes shared SMTP settings
 - does not create or start any agent runtime
-- relies on the module image label to reserve 31 TCP ports for the shared auth listener plus later per-agent dashboard publishing
+- relies on the module image label to reserve the shared auth listener `TCP_PORT`; older upgraded installs may still retain a larger `TCP_PORTS_RANGE`, but it is no longer required
 
 ### `configure-module`
 
@@ -203,14 +207,14 @@ Seeding is strict first-write only: later agent edits preserve existing `SOUL.md
 - `20persist-shared-env`: persists `base_virtualhost`, optional shared `user_domain`, plus `lets_encrypt`, tracks previous values for route cleanup, and backfills `TIMEZONE` when missing
 - `25configure-user-domain`: binds or unbinds the module relation to the selected NS8 user domain
 - `30remove-deleted-routes`: deletes managed Traefik routes for removed agents when routing is active, including one-time certificate cleanup when all routes are removed
-- `40remove-deleted-agents`: stops removed services, removes removed pods and containers including legacy `hermes-dashboard-<id>`, `hermes-auth-<id>`, and `hermes-agent-<id>` leftovers, and delegates generated-state cleanup to `remove-agent-state`
+- `40remove-deleted-agents`: stops removed services, removes removed pods and containers including `hermes-socket-<id>` plus legacy `hermes-dashboard-<id>`, `hermes-auth-<id>`, and `hermes-agent-<id>` leftovers, and delegates generated-state cleanup to `remove-agent-state`
 - `50write-agent-metadata`: writes one `metadata.json` file per desired agent, including persisted `allowed_user`
 - `60refresh-shared-settings`: runs `discover-smarthost`
-- `70sync-agent-runtime`: runs `sync-agent-runtime`, which now also fans out `AGENT_ALLOWED_USER` plus LDAP runtime env and secrets when `USER_DOMAIN` is set
+- `70sync-agent-runtime`: runs `sync-agent-runtime`, which now also fans out `AGENT_ALLOWED_USER` plus LDAP runtime env and secrets when `USER_DOMAIN` is set and writes `authproxy_agents.json` `upstream_socket` entries
 - `75seed-agent-home`: runs a one-shot Hermes container to seed first-time `/opt/data/SOUL.md` and `/opt/data/.env` content from checked-in templates
 - `80reload-systemd`: reloads the user systemd manager
 - `90reconcile-desired-routes`: creates, updates, or clears the shared Traefik route instance `<module>-hermes-auth` when `base_virtualhost` is configured or explicitly changed, and also deletes retained legacy per-agent route instances including `lets_encrypt` cleanup for host changes or shared TLS disable events
-- `95reconcile-agent-services`: enables and starts `hermes@<id>.service` for desired `start` agents, disables or stops the rest, and manages the shared `hermes-auth.service` when publishing is active
+- `95reconcile-agent-services`: enables and starts both `hermes@<id>.service` and `hermes-socket@<id>.service` for desired `start` agents, disables or stops the rest, and manages the shared `hermes-auth.service` when publishing is active
 
 ### `list-user-domains`
 

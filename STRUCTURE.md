@@ -10,7 +10,7 @@ This document maps the current layout.
 - `NS8-MODULE.md`: implementation-oriented NS8 lifecycle notes.
 - `NS8_RESOURCE_MAP.md`: NS8 reference index.
 - `HERMES_RESOURCE_MAP.md`: Hermes reference index.
-- `build-images.sh`: builds the module image plus the auth proxy and Hermes wrapper component images.
+- `build-images.sh`: builds the module image plus the auth proxy, Hermes wrapper, and socket relay component images.
 - `test-module.sh`: runs the module test suite.
 - `renovate.json`: Renovate configuration.
 
@@ -28,14 +28,14 @@ This document maps the current layout.
 - `configure-module/20persist-shared-env`: persists the shared virtualhost, optional shared `user_domain`, plus `lets_encrypt`, tracks previous route values for cleanup, and backfills `TIMEZONE`.
 - `configure-module/25configure-user-domain`: binds or unbinds the module from the selected NS8 user domain after shared settings are persisted.
 - `configure-module/30remove-deleted-routes`: removes managed Traefik routes for removed agents when routing is active, including one-time certificate cleanup when the last managed route disappears.
-- `configure-module/40remove-deleted-agents`: stops removed services, removes removed pods and containers, cleans legacy single-container leftovers, and delegates generated-state cleanup.
+- `configure-module/40remove-deleted-agents`: stops removed services, removes removed pods and containers including `hermes-socket-<id>`, cleans legacy single-container leftovers, and delegates generated-state cleanup.
 - `configure-module/50write-agent-metadata`: stores one metadata file per desired agent, including persisted `allowed_user`.
 - `configure-module/60refresh-shared-settings`: refreshes shared SMTP settings via `discover-smarthost`.
-- `configure-module/70sync-agent-runtime`: regenerates `agent_<id>.env` and `agent_<id>_secrets.env`, including the live auth proxy LDAP runtime env, bind secrets, and per-agent `AGENT_ALLOWED_USER` when a shared `user_domain` is configured.
+- `configure-module/70sync-agent-runtime`: regenerates `agent_<id>.env` and `agent_<id>_secrets.env`, including the live auth proxy LDAP runtime env, bind secrets, and per-agent `AGENT_ALLOWED_USER` when a shared `user_domain` is configured, and writes `authproxy_agents.json` `upstream_socket` entries.
 - `configure-module/75seed-agent-home`: runs a one-shot Hermes container to seed strict first-write-only `/opt/data/SOUL.md` and `/opt/data/.env` content from checked-in templates.
 - `configure-module/80reload-systemd`: reloads the user systemd manager.
 - `configure-module/90reconcile-desired-routes`: creates, updates, or deletes the shared Traefik auth route for the desired configuration, and cleans retained legacy per-agent routes when the shared host or TLS mode changes.
-- `configure-module/95reconcile-agent-services`: enables, starts, stops, or disables per-agent services to match desired state.
+- `configure-module/95reconcile-agent-services`: enables, starts, stops, or disables `hermes@<id>.service` and `hermes-socket@<id>.service` to match desired state.
 - `configure-module/validate-input.json`: input schema for the shared `base_virtualhost`, optional `user_domain`, shared `lets_encrypt`, and the Hermes `agents` payload including `allowed_user`.
 - `get-configuration/20read`: returns the shared dashboard virtualhost, shared `user_domain`, shared `lets_encrypt` setting, and configured agents with desired persisted status plus `allowed_user`.
 - `get-configuration/validate-output.json`: output schema for the shared dashboard virtualhost, shared `user_domain`, shared `lets_encrypt` flag, and the Hermes `agents` response.
@@ -47,15 +47,15 @@ This document maps the current layout.
 - `list-domain-users/validate-input.json`: input schema for the domain-user lookup action.
 - `list-domain-users/validate-output.json`: output schema for the domain-user lookup action.
 - `destroy-module/10remove-routes`: removes managed Traefik routes for all known agents, including shared certificate cleanup when `lets_encrypt` is enabled.
-- `destroy-module/20stop-services`: stops known services and removes known pods and containers, including legacy single-container leftovers.
+- `destroy-module/20stop-services`: stops known services and removes known pods and containers, including `hermes-socket-<id>` and legacy single-container leftovers.
 - `destroy-module/30remove-agent-state`: delegates generated file, directory, and volume cleanup for each known agent.
 - `destroy-module/40remove-agents-root`: removes the top-level `agents/` directory.
 
 ### `imageroot/bin/`
 
 - `discover-smarthost`: reads cluster smarthost settings and writes public values into `environment` and `SMTP_PASSWORD` into `secrets.env`.
-- `remove-agent-state`: removes generated per-agent env files, agent state directories, and the per-agent Hermes home volume.
-- `sync-agent-runtime`: writes `agent_<id>.env` and `agent_<id>_secrets.env` for each configured agent, including the live auth proxy LDAP env and bind secrets when `USER_DOMAIN` is set.
+- `remove-agent-state`: removes generated per-agent env files, dashboard socket files, agent state directories, and the per-agent Hermes home volume.
+- `sync-agent-runtime`: writes `agent_<id>.env` and `agent_<id>_secrets.env` for each configured agent, including the live auth proxy LDAP env and bind secrets when `USER_DOMAIN` is set, and generates `authproxy_agents.json` `upstream_socket` records.
 
 ### `imageroot/events/`
 
@@ -63,18 +63,19 @@ This document maps the current layout.
 
 ### `imageroot/pypkg/`
 
-- `hermes_agent_state.py`: small shared helper for metadata validation, env/json file handling, path naming, TCP port derivation, and named-volume naming.
+- `hermes_agent_state.py`: small shared helper for metadata validation, env/json file handling, dashboard socket naming, shared auth TCP allocation reuse, and named-volume naming.
 - `hermes_user_domain.py`: shared helper for user-domain normalization, `Ldapproxy` lookup, LDAP user listing, and generation of per-agent LDAP runtime env and bind secrets.
 
 ### `imageroot/update-module.d/`
 
-- `10ensure_tcp_ports`: backfills the managed 31-port TCP allocation during upgrades when older instances are missing `TCP_PORT` or `TCP_PORTS_RANGE`.
+- `10ensure_tcp_ports`: backfills the managed shared auth `TCP_PORT` during upgrades when older instances are missing it, while tolerating legacy larger `TCP_PORTS_RANGE` values.
 
 ### `imageroot/systemd/user/`
 
 - `hermes@.service`: combined Hermes dashboard and gateway service per configured agent.
+- `hermes-socket@.service`: per-agent socket relay sidecar that exposes the dashboard over a Unix socket.
 - `hermes-auth.service`: shared authentication proxy service for the shared virtualhost.
-- `hermes-pod@.service`: per-agent pod owner unit that publishes the dashboard port.
+- `hermes-pod@.service`: per-agent pod owner unit that supplies the private pod network for Hermes and the socket relay sidecar.
 
 ### `imageroot/templates/`
 
@@ -84,9 +85,10 @@ This document maps the current layout.
 ## `containers/`
 
 - `containers/auth/Containerfile`: shared dashboard auth proxy image.
-- `containers/auth/authproxy.py`: FastAPI auth proxy that authenticates the shared virtualhost against LDAP, issues a host-wide session cookie, preserves the dashboard upstream `Authorization` header, replaces any inbound `X-Hermes-Authenticated-User` value with a trusted value derived from the authenticated session username, logs auth attempts and outcomes to stdout, and proxies authenticated sessions to the assigned dashboard upstream from `authproxy_agents.json`.
+- `containers/auth/authproxy.py`: FastAPI auth proxy that authenticates the shared virtualhost against LDAP, issues a host-wide session cookie, preserves the dashboard upstream `Authorization` header, replaces any inbound `X-Hermes-Authenticated-User` value with a trusted value derived from the authenticated session username, logs auth attempts and outcomes to stdout, and proxies authenticated sessions to the assigned dashboard upstream from `authproxy_agents.json`, including `upstream_socket` records.
 - `containers/hermes/Containerfile`: Hermes wrapper image built from `docker.io/nousresearch/hermes-agent:v2026.4.16` without a dashboard source patch helper.
 - `containers/hermes/entrypoint.sh`: wrapper entrypoint that bootstraps the Hermes home volume, exports the bundled `web_dist` when present, and can run the Hermes dashboard and gateway together inside one container.
+- `containers/socket/Containerfile`: minimal Alpine-based socket relay image that runs `socat` for the per-agent dashboard sidecar.
 
 ## `ui/`
 

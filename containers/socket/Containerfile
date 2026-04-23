@@ -1,0 +1,7 @@
+FROM docker.io/alpine:3.21
+LABEL org.opencontainers.image.title="hermes-agent-socket"
+LABEL org.opencontainers.image.description="Unix socket relay sidecar for Hermes dashboard publishing"
+
+RUN apk add --no-cache socat
+
+ENTRYPOINT ["/usr/bin/socat"]

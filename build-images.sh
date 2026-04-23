@@ -37,6 +37,7 @@ build_component_image() {
 component_images=(
     "${repobase}/hermes-agent-auth:${imagetag}"
     "${repobase}/hermes-agent-hermes:${imagetag}"
+    "${repobase}/hermes-agent-socket:${imagetag}"
 )
 
 # Create a new empty container image
@@ -57,6 +58,7 @@ buildah run \
 
 build_component_image "hermes-agent-auth" "containers/auth"
 build_component_image "hermes-agent-hermes" "containers/hermes"
+build_component_image "hermes-agent-socket" "containers/socket"
 
 # Add imageroot directory to the container image
 buildah add "${container}" imageroot /imageroot
@@ -64,7 +66,7 @@ buildah add "${container}" ui/dist /ui
 # Setup the entrypoint and set a rootless container
 buildah config --entrypoint=/ \
     --label="org.nethserver.authorizations=cluster:accountconsumer traefik@node:routeadm node:portsadm" \
-    --label="org.nethserver.tcp-ports-demand=31" \
+    --label="org.nethserver.tcp-ports-demand=1" \
     --label="org.nethserver.rootfull=0" \
     --label="org.nethserver.images=${component_images[*]}" \
     "${container}"

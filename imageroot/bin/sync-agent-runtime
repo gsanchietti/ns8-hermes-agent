@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pypkg"))
 from hermes_agent_state import (
     AGENT_SECRET_KEY,
     AGENT_ALLOWED_USER_ENV,
-    AGENT_DASHBOARD_HOST_PORT_ENV,
     AUTH_SESSION_SECRET_KEY,
     AUTHPROXY_AGENTS_FILE,
     AUTHPROXY_ENVFILE,
@@ -22,11 +21,11 @@ from hermes_agent_state import (
     SMTP_PUBLIC_KEYS,
     SMTP_SECRET_KEY,
     USER_DOMAIN_ENV,
-    agent_dashboard_host_port,
+    agent_dashboard_socket_path,
     read_agents_from_state,
     write_jsonfile,
 )
-from hermes_user_domain import PODMAN_LOOPBACK_HOST, public_runtime_env, secrets_runtime_env
+from hermes_user_domain import public_runtime_env, secrets_runtime_env
 
 
 def timezone_value(shared_environment=None):
@@ -65,7 +64,6 @@ def build_agent_public_env(agent_data, shared_environment):
         "AGENT_ROLE": agent_data["role"],
         "TIMEZONE": timezone_value(shared_environment),
         "TZ": timezone_value(shared_environment),
-        AGENT_DASHBOARD_HOST_PORT_ENV: str(agent_dashboard_host_port(agent_data["id"], shared_environment)),
     }
 
     base_virtualhost = (shared_environment.get(BASE_VIRTUALHOST_ENV) or "").strip().lower()
@@ -156,7 +154,7 @@ def build_authproxy_agents(shared_environment):
                 "name": agent_data["name"],
                 "allowed_user": allowed_user,
                 "status": agent_data["status"],
-                "upstream_url": f"http://{PODMAN_LOOPBACK_HOST}:{agent_dashboard_host_port(agent_data['id'], shared_environment)}",
+                "upstream_socket": agent_dashboard_socket_path(agent_data["id"]),
             }
         )
 

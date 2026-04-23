@@ -22,10 +22,13 @@ REMOVE_AGENT_STATE_PATH = ROOT / "imageroot" / "bin" / "remove-agent-state"
 SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes@.service"
 AUTH_SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes-auth.service"
 POD_SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes-pod@.service"
+SOCKET_SERVICE_TEMPLATE_PATH = ROOT / "imageroot" / "systemd" / "user" / "hermes-socket@.service"
 AUTH_CONTAINERFILE_PATH = ROOT / "containers" / "auth" / "Containerfile"
 HERMES_CONTAINERFILE_PATH = ROOT / "containers" / "hermes" / "Containerfile"
+SOCKET_CONTAINERFILE_PATH = ROOT / "containers" / "socket" / "Containerfile"
 HERMES_ENTRYPOINT_PATH = ROOT / "containers" / "hermes" / "entrypoint.sh"
 HERMES_DASHBOARD_PATCH_PATH = ROOT / "containers" / "hermes" / "patch_dashboard_source.py"
+BUILD_IMAGES_PATH = ROOT / "build-images.sh"
 CREATE_MODULE_ACTION_DIR = ROOT / "imageroot" / "actions" / "create-module"
 CONFIGURE_MODULE_ACTION_DIR = ROOT / "imageroot" / "actions" / "configure-module"
 DESTROY_MODULE_ACTION_DIR = ROOT / "imageroot" / "actions" / "destroy-module"
@@ -372,6 +375,11 @@ def mocked_authproxy_dependencies():
     class FakeReadError(FakeRequestError):
         pass
 
+    class FakeAsyncHTTPTransport:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
     def escape_filter_chars(value):
         return value.replace("\\", r"\5c").replace("*", r"\2a").replace("(", r"\28").replace(")", r"\29")
 
@@ -383,6 +391,7 @@ def mocked_authproxy_dependencies():
     setattr(fastapi_responses_module, "RedirectResponse", FakeResponse)
     setattr(fastapi_responses_module, "Response", FakeResponse)
     setattr(httpx_module, "AsyncClient", FakeAsyncClient)
+    setattr(httpx_module, "AsyncHTTPTransport", FakeAsyncHTTPTransport)
     setattr(httpx_module, "RequestError", FakeRequestError)
     setattr(httpx_module, "ReadError", FakeReadError)
     setattr(itsdangerous_module, "BadSignature", ValueError)
@@ -427,6 +436,29 @@ class HermesAuthProxyTest(unittest.TestCase):
             allowed_user="alice",
             status="start",
             upstream_url="http://10.0.2.2:20002",
+        )
+        values = {
+            "user_domain": "example.org",
+            "ldap_host": "ldap.example.org",
+            "ldap_port": 389,
+            "ldap_base_dn": "dc=example,dc=org",
+            "ldap_schema": "rfc2307",
+            "ldap_bind_dn": "",
+            "ldap_bind_password": "",
+            "session_secret": "test-secret",
+            "agents_by_id": {1: agent_record},
+            "agents_by_user": {"alice": agent_record},
+        }
+        values.update(overrides)
+        return authproxy.RuntimeConfig(**values)
+
+    def socket_runtime_config(self, authproxy, **overrides):
+        agent_record = authproxy.AgentRecord(
+            agent_id=1,
+            agent_name="Agent One",
+            allowed_user="alice",
+            status="start",
+            upstream_socket="/sockets/agent-1.sock",
         )
         values = {
             "user_domain": "example.org",
@@ -635,6 +667,98 @@ class HermesAuthProxyTest(unittest.TestCase):
         self.assertIn("event=proxy_forward", logged_messages[2])
         self.assertIn("agent_id=1", logged_messages[2])
         self.assertIn("detail=upstream_url=http://10.0.2.2:20002/api/status?verbose=1", logged_messages[2])
+
+    def test_load_agent_registry_accepts_unix_socket_upstreams(self):
+        authproxy = self.load_authproxy()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry_path = Path(temp_dir) / "authproxy_agents.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "agents": [
+                            {
+                                "id": 1,
+                                "name": "Agent One",
+                                "allowed_user": "alice",
+                                "status": "start",
+                                "upstream_socket": "/sockets/agent-1.sock",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            agents_by_id, agents_by_user = authproxy.load_agent_registry(str(registry_path))
+
+        self.assertEqual(agents_by_id[1].upstream_socket, "/sockets/agent-1.sock")
+        self.assertEqual(agents_by_id[1].upstream_origin, "http://agent-1")
+        self.assertEqual(agents_by_user["alice"].agent_id, 1)
+
+    def test_proxy_uses_unix_socket_upstream_when_configured(self):
+        authproxy = self.load_authproxy()
+        config = self.socket_runtime_config(authproxy)
+
+        class FakeUpstreamResponse:
+            def __init__(self):
+                self.content = b"ok"
+                self.status_code = 200
+                self.headers = {"location": "http://agent-1/settings"}
+
+        class FakeUdsClient:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self.calls = []
+
+            async def request(self, *args, **kwargs):
+                self.calls.append({"args": args, "kwargs": kwargs})
+                return FakeUpstreamResponse()
+
+            async def aclose(self):
+                return None
+
+        uds_clients = []
+
+        def build_fake_client(*args, **kwargs):
+            client = FakeUdsClient(*args, **kwargs)
+            uds_clients.append(client)
+            return client
+
+        request = self.make_request(
+            types.SimpleNamespace(),
+            headers={"x-forwarded-proto": "https"},
+            cookies={
+                authproxy.SESSION_COOKIE: json.dumps(
+                    {
+                        "allowed_user": "alice",
+                        "user_domain": config.user_domain,
+                        "agent_id": 1,
+                    }
+                )
+            },
+            path="/api/status",
+            query="verbose=1",
+            method="GET",
+        )
+
+        with mock.patch.object(authproxy, "load_config", return_value=config), mock.patch.object(
+            authproxy.httpx,
+            "AsyncClient",
+            side_effect=build_fake_client,
+        ), mock.patch.object(
+            authproxy.httpx,
+            "AsyncHTTPTransport",
+            side_effect=lambda **kwargs: types.SimpleNamespace(**kwargs),
+        ):
+            response = asyncio.run(authproxy.proxy("api/status", request))
+
+        self.assertEqual(response.kwargs["status_code"], 200)
+        self.assertEqual(len(uds_clients), 1)
+        self.assertEqual(uds_clients[0].kwargs["transport"].uds, "/sockets/agent-1.sock")
+        self.assertEqual(uds_clients[0].calls[0]["kwargs"]["url"], "http://agent-1/api/status?verbose=1")
+        self.assertEqual(response.kwargs["headers"]["location"], "/settings")
 
     def test_proxy_preserves_dashboard_authorization_and_sets_custom_user_header(self):
         authproxy = self.load_authproxy()
@@ -876,6 +1000,7 @@ class HermesModuleStateTest(unittest.TestCase):
         service_template = SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
         auth_template = AUTH_SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
         pod_template = POD_SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
+        socket_template = SOCKET_SERVICE_TEMPLATE_PATH.read_text(encoding="utf-8")
 
         self.assertIn("Restart=on-failure", service_template)
         self.assertNotIn("Restart=always", service_template)
@@ -890,7 +1015,7 @@ class HermesModuleStateTest(unittest.TestCase):
         self.assertIn("--env-file %S/state/agent_%i.env", service_template)
         self.assertIn("--env-file %S/state/agent_%i_secrets.env", service_template)
         self.assertIn("API_SERVER_ENABLED=true", service_template)
-        self.assertIn("dashboard --host 0.0.0.0 --port 9120 --insecure --no-open -- gateway run", service_template)
+        self.assertIn("dashboard --host 127.0.0.1 --port 9120 --insecure --no-open -- gateway run", service_template)
         self.assertIn("gateway run", service_template)
         self.assertNotIn("seed-agent-home", service_template)
 
@@ -898,20 +1023,32 @@ class HermesModuleStateTest(unittest.TestCase):
         self.assertIn("--name hermes-auth", auth_template)
         self.assertIn("--network=slirp4netns:allow_host_loopback=true", auth_template)
         self.assertIn("--publish 127.0.0.1:${TCP_PORT}:9119", auth_template)
+        self.assertIn("install -d -m 0770 %S/state/dashboard-sockets", auth_template)
         self.assertIn("EnvironmentFile=-%S/state/authproxy.env", auth_template)
         self.assertIn("--env-file %S/state/authproxy.env", auth_template)
         self.assertIn("--env-file %S/state/authproxy_secrets.env", auth_template)
         self.assertIn("AUTH_PROXY_AGENT_REGISTRY=/app/authproxy_agents.json", auth_template)
         self.assertIn("AUTH_PROXY_PORT=9119", auth_template)
+        self.assertIn("--volume %S/state/dashboard-sockets:/sockets:z", auth_template)
         self.assertIn("${HERMES_AGENT_AUTH_IMAGE}", auth_template)
         self.assertIn("python /app/authproxy.py", auth_template)
 
         self.assertIn("Type=oneshot", pod_template)
         self.assertIn("RemainAfterExit=yes", pod_template)
-        self.assertIn("AGENT_DASHBOARD_HOST_PORT", pod_template)
         self.assertNotIn("hermes-auth@%i.service", pod_template)
         self.assertIn("--name hermes-pod-%i", pod_template)
-        self.assertIn("--publish 127.0.0.1:${AGENT_DASHBOARD_HOST_PORT}:9120", pod_template)
+        self.assertNotIn("--publish 127.0.0.1:${AGENT_DASHBOARD_HOST_PORT}:9120", pod_template)
+
+        self.assertIn("Description=Hermes dashboard unix socket sidecar %i", socket_template)
+        self.assertIn("Requires=hermes-pod@%i.service hermes@%i.service", socket_template)
+        self.assertIn("PartOf=hermes@%i.service", socket_template)
+        self.assertIn("install -d -m 0770 %S/state/dashboard-sockets", socket_template)
+        self.assertIn("--name hermes-socket-%i", socket_template)
+        self.assertIn("--pod hermes-pod-%i", socket_template)
+        self.assertIn("--volume %S/state/dashboard-sockets:/sockets:z", socket_template)
+        self.assertIn("${HERMES_AGENT_SOCKET_IMAGE}", socket_template)
+        self.assertIn("UNIX-LISTEN:/sockets/agent-%i.sock,fork,unlink-early,mode=0660", socket_template)
+        self.assertIn("TCP-CONNECT:127.0.0.1:9120", socket_template)
 
     def test_hermes_containerfile_uses_expected_base_image(self):
         containerfile = HERMES_CONTAINERFILE_PATH.read_text(encoding="utf-8")
@@ -929,6 +1066,21 @@ class HermesModuleStateTest(unittest.TestCase):
         self.assertIn("fastapi==0.115.12", containerfile)
         self.assertIn("ldap3==2.9.1", containerfile)
         self.assertIn("COPY authproxy.py /app/authproxy.py", containerfile)
+
+    def test_socket_containerfile_installs_relay_runtime(self):
+        containerfile = SOCKET_CONTAINERFILE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("FROM docker.io/alpine:3.21", containerfile)
+        self.assertIn('org.opencontainers.image.title="hermes-agent-socket"', containerfile)
+        self.assertIn("apk add --no-cache socat", containerfile)
+        self.assertIn('ENTRYPOINT ["/usr/bin/socat"]', containerfile)
+
+    def test_build_images_script_publishes_socket_image_and_one_tcp_port(self):
+        build_script = BUILD_IMAGES_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('"${repobase}/hermes-agent-socket:${imagetag}"', build_script)
+        self.assertIn('build_component_image "hermes-agent-socket" "containers/socket"', build_script)
+        self.assertIn('--label="org.nethserver.tcp-ports-demand=1"', build_script)
 
     def test_hermes_entrypoint_keeps_absolute_virtualenv_activation(self):
         entrypoint = HERMES_ENTRYPOINT_PATH.read_text(encoding="utf-8")
@@ -1056,7 +1208,6 @@ class HermesModuleStateTest(unittest.TestCase):
             self.assertEqual(public_env["AGENT_ROLE"], "developer")
             self.assertEqual(public_env["AGENT_ALLOWED_USER"], "alice")
             self.assertEqual(public_env["SMTP_HOST"], "smtp.example.org")
-            self.assertEqual(public_env["AGENT_DASHBOARD_HOST_PORT"], "20002")
             self.assertEqual(public_env["USER_DOMAIN"], "example.org")
             self.assertEqual(public_env["LDAP_HOST"], "10.0.2.2")
             self.assertEqual(public_env["LDAP_PORT"], "389")
@@ -1066,7 +1217,6 @@ class HermesModuleStateTest(unittest.TestCase):
                 set(public_env),
                 {
                     "AGENT_ALLOWED_USER",
-                    "AGENT_DASHBOARD_HOST_PORT",
                     "AGENT_ID",
                     "AGENT_NAME",
                     "AGENT_ROLE",
@@ -1103,7 +1253,7 @@ class HermesModuleStateTest(unittest.TestCase):
                             "name": "Alice User",
                             "allowed_user": "alice",
                             "status": "start",
-                            "upstream_url": "http://10.0.2.2:20002",
+                            "upstream_socket": "/sockets/agent-1.sock",
                         }
                     ]
                 },
@@ -1155,7 +1305,6 @@ class HermesModuleStateTest(unittest.TestCase):
             agent_secrets = read_envfile(Path("agent_1_secrets.env"))
 
             self.assertEqual(public_env["AGENT_NAME"], "Alice User")
-            self.assertEqual(public_env["AGENT_DASHBOARD_HOST_PORT"], "20002")
             self.assertEqual(agent_secrets["SMTP_PASSWORD"], "secret-pass")
             self.assertTrue(agent_secrets["HERMES_AGENT_SECRET"])
             self.assertTrue(read_envfile(Path("authproxy_secrets.env"))["HERMES_AUTH_SESSION_SECRET"])
@@ -1669,7 +1818,6 @@ class HermesModuleStateTest(unittest.TestCase):
             env_patch,
             {
                 "TCP_PORT": "21000",
-                "TCP_PORTS_RANGE": "21000-21030",
             },
         )
         allocator.assert_called_once_with(self.state.RESERVED_TCP_PORTS, "tcp")
@@ -1696,7 +1844,6 @@ class HermesModuleStateTest(unittest.TestCase):
         agent_stub.mset_env.assert_called_once_with(
             {
                 "TCP_PORT": "22000",
-                "TCP_PORTS_RANGE": "22000-22030",
             }
         )
 
@@ -1777,14 +1924,16 @@ class HermesModuleStateTest(unittest.TestCase):
                 agent_stub.bind_user_domains.assert_called_once_with([])
                 command_list = [call.args[0] for call in run_command.call_args_list]
                 self.assertEqual(
-                    command_list[:10],
+                    command_list[:12],
                     [
+                        ["systemctl", "--user", "disable", "--now", "hermes-socket@2.service"],
                         ["systemctl", "--user", "disable", "--now", "hermes@2.service"],
                         ["systemctl", "--user", "disable", "--now", "hermes-auth@2.service"],
                         ["systemctl", "--user", "stop", "hermes-pod@2.service"],
                         ["systemctl", "--user", "disable", "--now", "hermes-agent@2.service"],
                         ["podman", "pod", "rm", "--force", "hermes-pod-2"],
                         ["podman", "rm", "--force", "hermes-2"],
+                        ["podman", "rm", "--force", "hermes-socket-2"],
                         ["podman", "rm", "--force", "hermes-dashboard-2"],
                         ["podman", "rm", "--force", "hermes-auth-2"],
                         ["podman", "rm", "--force", "hermes-agent-2"],
@@ -1792,7 +1941,7 @@ class HermesModuleStateTest(unittest.TestCase):
                     ],
                 )
                 self.assertEqual(
-                    command_list[10:12],
+                    command_list[12:14],
                     [
                         ["podman", "volume", "exists", "hermes-agent-2-home"],
                         ["podman", "volume", "rm", "--force", "hermes-agent-2-home"],
@@ -1801,17 +1950,14 @@ class HermesModuleStateTest(unittest.TestCase):
                 self.assertIn(["runagent", "discover-smarthost"], command_list)
                 self.assertIn(["runagent", "sync-agent-runtime"], command_list)
                 self.assertIn(["systemctl", "--user", "daemon-reload"], command_list)
-                self.assertEqual(
-                    command_list[-4:],
-                    [
-                        ["systemctl", "--user", "stop", "hermes-pod@1.service"],
-                        ["systemctl", "--user", "start", "hermes@1.service"],
-                        ["systemctl", "--user", "disable", "--now", "hermes-auth.service"],
-                        ["podman", "rm", "--force", "hermes-auth"],
-                    ],
-                )
                 self.assertIn(["systemctl", "--user", "enable", "hermes@1.service"], command_list)
+                self.assertIn(["systemctl", "--user", "enable", "hermes-socket@1.service"], command_list)
+                self.assertIn(["systemctl", "--user", "stop", "hermes-socket@1.service"], command_list)
                 self.assertIn(["systemctl", "--user", "stop", "hermes@1.service"], command_list)
+                self.assertIn(["systemctl", "--user", "start", "hermes-socket@1.service"], command_list)
+                self.assertIn(["systemctl", "--user", "start", "hermes@1.service"], command_list)
+                self.assertIn(["systemctl", "--user", "disable", "--now", "hermes-auth.service"], command_list)
+                self.assertIn(["podman", "rm", "--force", "hermes-auth"], command_list)
                 seed_commands = [command for command in command_list if command[:2] == ["podman", "run"]]
                 self.assertEqual(len(seed_commands), 1)
                 self.assertIn("hermes-agent-seed-1", seed_commands[0])
@@ -2168,6 +2314,10 @@ class HermesModuleStateTest(unittest.TestCase):
                         ),
                         mock.call(["podman", "rm", "--force", "hermes-auth"], check=False),
                         mock.call(
+                            ["systemctl", "--user", "disable", "--now", "hermes-socket@4.service"],
+                            check=False,
+                        ),
+                        mock.call(
                             ["systemctl", "--user", "disable", "--now", "hermes@4.service"],
                             check=False,
                         ),
@@ -2185,6 +2335,7 @@ class HermesModuleStateTest(unittest.TestCase):
                         ),
                         mock.call(["podman", "pod", "rm", "--force", "hermes-pod-4"], check=False),
                         mock.call(["podman", "rm", "--force", "hermes-4"], check=False),
+                        mock.call(["podman", "rm", "--force", "hermes-socket-4"], check=False),
                         mock.call(["podman", "rm", "--force", "hermes-dashboard-4"], check=False),
                         mock.call(["podman", "rm", "--force", "hermes-auth-4"], check=False),
                         mock.call(["podman", "rm", "--force", "hermes-agent-4"], check=False),
@@ -2384,8 +2535,10 @@ class HermesModuleStateTest(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
                 self.state.ensure_private_directory(Path("agents") / "4")
+                self.state.ensure_private_directory(self.state.AGENT_DASHBOARD_SOCKETS_DIR)
                 write_envfile(Path("agent_4.env"), {"AGENT_NAME": "Four Agent"})
                 write_envfile(Path("agent_4_secrets.env"), {"HERMES_AGENT_SECRET": "secret"})
+                (self.state.AGENT_DASHBOARD_SOCKETS_DIR / "agent-4.sock").write_text("socket", encoding="utf-8")
 
                 def run_side_effect(command, check=False, **kwargs):
                     if command == ["podman", "volume", "exists", "hermes-agent-4-home"]:
@@ -2404,6 +2557,36 @@ class HermesModuleStateTest(unittest.TestCase):
                 self.assertTrue(Path("agent_4.env").exists())
                 self.assertTrue(Path("agent_4_secrets.env").exists())
                 self.assertTrue((Path("agents") / "4").exists())
+                self.assertTrue((self.state.AGENT_DASHBOARD_SOCKETS_DIR / "agent-4.sock").exists())
+        finally:
+            sys.argv[:] = original_argv
+
+    def test_remove_agent_state_removes_dashboard_socket_on_success(self):
+        original_argv = sys.argv[:]
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+                self.state.ensure_private_directory(Path("agents") / "4")
+                self.state.ensure_private_directory(self.state.AGENT_DASHBOARD_SOCKETS_DIR)
+                write_envfile(Path("agent_4.env"), {"AGENT_NAME": "Four Agent"})
+                write_envfile(Path("agent_4_secrets.env"), {"HERMES_AGENT_SECRET": "secret"})
+                (self.state.AGENT_DASHBOARD_SOCKETS_DIR / "agent-4.sock").write_text("socket", encoding="utf-8")
+
+                def run_side_effect(command, check=False, **kwargs):
+                    if command == ["podman", "volume", "exists", "hermes-agent-4-home"]:
+                        return types.SimpleNamespace(returncode=1)
+                    return types.SimpleNamespace(returncode=0)
+
+                sys.argv[:] = [str(REMOVE_AGENT_STATE_PATH), "--agent-id", "4"]
+                with mock.patch("subprocess.run", side_effect=run_side_effect):
+                    with self.assertRaises(SystemExit) as exit_error:
+                        runpy.run_path(str(REMOVE_AGENT_STATE_PATH), run_name="__main__")
+
+                self.assertEqual(exit_error.exception.code, 0)
+
+                self.assertFalse(Path("agent_4.env").exists())
+                self.assertFalse(Path("agent_4_secrets.env").exists())
+                self.assertFalse((Path("agents") / "4").exists())
+                self.assertFalse((self.state.AGENT_DASHBOARD_SOCKETS_DIR / "agent-4.sock").exists())
         finally:
             sys.argv[:] = original_argv
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pypkg"))
 
-from hermes_agent_state import MAX_AGENTS
+from hermes_agent_state import AGENT_DASHBOARD_SOCKETS_DIR, MAX_AGENTS, agent_dashboard_socket_name
 
 
 def parse_agent_id(value):
@@ -39,6 +39,10 @@ def remove_agent_state(agent_id):
     for path in (Path(f"agent_{agent_id}.env"), Path(f"agent_{agent_id}_secrets.env")):
         if path.exists():
             path.unlink()
+
+    dashboard_socket_path = AGENT_DASHBOARD_SOCKETS_DIR / agent_dashboard_socket_name(agent_id)
+    if dashboard_socket_path.exists() or dashboard_socket_path.is_symlink():
+        dashboard_socket_path.unlink()
 
     agent_state_dir = Path("agents") / str(agent_id)
     if agent_state_dir.exists():

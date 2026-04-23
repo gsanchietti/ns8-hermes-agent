@@ -12,9 +12,11 @@ AUTHPROXY_ENVFILE = Path("authproxy.env")
 AUTHPROXY_SECRETS_ENVFILE = Path("authproxy_secrets.env")
 AUTHPROXY_AGENTS_FILE = Path("authproxy_agents.json")
 AGENTS_DIR = Path("agents")
+AGENT_DASHBOARD_SOCKETS_DIR = Path("dashboard-sockets")
+AUTHPROXY_SOCKET_MOUNT_DIR = "/sockets"
 SOUL_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates" / "SOUL"
 MAX_AGENTS = 30
-RESERVED_TCP_PORTS = MAX_AGENTS + 1
+RESERVED_TCP_PORTS = 1
 
 ALLOWED_ROLES = (
     "default",
@@ -52,7 +54,6 @@ BASE_VIRTUALHOST_PREVIOUS_ENV = "_HERMES_BASE_VIRTUALHOST_PREVIOUS"
 LETS_ENCRYPT_ENV = "LETS_ENCRYPT"
 LETS_ENCRYPT_PREVIOUS_ENV = "_HERMES_LETS_ENCRYPT_PREVIOUS"
 USER_DOMAIN_ENV = "USER_DOMAIN"
-AGENT_DASHBOARD_HOST_PORT_ENV = "AGENT_DASHBOARD_HOST_PORT"
 AGENT_ALLOWED_USER_ENV = "AGENT_ALLOWED_USER"
 DASHBOARD_PORT = 9119
 BASE_VIRTUALHOST_PATTERN = re.compile(
@@ -165,6 +166,17 @@ def shared_route_instance_name(module_id=None, shared_environment=None):
 
     return f"{module_value}-hermes-auth"
 
+
+def agent_dashboard_socket_name(agent_id):
+    if not isinstance(agent_id, int) or agent_id < 1 or agent_id > MAX_AGENTS:
+        raise ValueError(f"agent id must be between 1 and {MAX_AGENTS}")
+
+    return f"agent-{agent_id}.sock"
+
+
+def agent_dashboard_socket_path(agent_id, socket_dir=AUTHPROXY_SOCKET_MOUNT_DIR):
+    return str(Path(socket_dir) / agent_dashboard_socket_name(agent_id))
+
 def parse_tcp_ports_range(port_range):
     normalized_range = (port_range or "").strip()
     if not normalized_range:
@@ -202,8 +214,8 @@ def ensure_tcp_ports_environment(shared_environment=None, ports_demand=RESERVED_
         start_port = None
         end_port = None
 
-    # Reuse an existing large-enough range to keep per-agent dashboard ports
-    # stable across reconfiguration; only allocate a new range as a fallback.
+    # Reuse the existing shared auth listener port when present. Older
+    # revisions may still leave a larger range behind, so accept that too.
     if start_port is not None and end_port is not None and end_port - start_port + 1 >= ports_demand:
         expected_environment = build_tcp_ports_environment(
             start_port=start_port,
@@ -228,20 +240,6 @@ def ensure_tcp_ports_environment(shared_environment=None, ports_demand=RESERVED_
         end_port=int(allocated_range[1]),
         ports_demand=ports_demand,
     )
-
-
-def agent_dashboard_host_port(agent_id, shared_environment=None):
-    if not isinstance(agent_id, int) or agent_id < 1 or agent_id > MAX_AGENTS:
-        raise ValueError(f"agent id must be between 1 and {MAX_AGENTS}")
-
-    if shared_environment is None:
-        shared_environment = os.environ
-
-    start_port, end_port = parse_tcp_ports_range(shared_environment.get(TCP_PORTS_RANGE_ENV))
-    if end_port - start_port + 1 < RESERVED_TCP_PORTS:
-        raise ValueError(f"{TCP_PORTS_RANGE_ENV} must contain at least {RESERVED_TCP_PORTS} ports")
-
-    return start_port + agent_id
 
 
 def read_agents_from_state():

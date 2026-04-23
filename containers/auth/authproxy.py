@@ -44,11 +44,22 @@ class AgentRecord:
     agent_name: str
     allowed_user: str
     status: str
-    upstream_url: str
+    upstream_url: str = ""
+    upstream_socket: str = ""
 
     @property
     def display_name(self):
         return self.agent_name or f"Agent {self.agent_id}"
+
+    @property
+    def upstream_origin(self):
+        if self.upstream_url:
+            return self.upstream_url.rstrip("/")
+        return f"http://agent-{self.agent_id}"
+
+    @property
+    def has_upstream(self):
+        return bool(self.upstream_url or self.upstream_socket)
 
 
 @dataclass(frozen=True)
@@ -110,12 +121,15 @@ def load_agent_registry(path):
                 agent_name=str(raw_agent.get("name") or "").strip(),
                 allowed_user=str(raw_agent["allowed_user"]).strip(),
                 status=str(raw_agent.get("status") or "").strip().lower(),
-                upstream_url=str(raw_agent["upstream_url"]).rstrip("/"),
+                upstream_url=str(raw_agent.get("upstream_url") or "").rstrip("/"),
+                upstream_socket=str(raw_agent.get("upstream_socket") or "").strip(),
             )
         except (KeyError, TypeError, ValueError):
             continue
 
-        if not agent_record.allowed_user or not agent_record.upstream_url:
+        if not agent_record.allowed_user or not agent_record.has_upstream:
+            continue
+        if agent_record.upstream_socket and not agent_record.upstream_socket.startswith("/"):
             continue
         if agent_record.allowed_user in agents_by_user:
             return {}, {}
@@ -207,9 +221,12 @@ def ldap_server(config):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.client = httpx.AsyncClient(timeout=60.0, follow_redirects=False)
+    app.state.uds_clients = {}
     try:
         yield
     finally:
+        for client in app.state.uds_clients.values():
+            await client.aclose()
         await app.state.client.aclose()
 
 
@@ -612,10 +629,37 @@ def response_headers(upstream_response, upstream_base_url):
     return headers
 
 
-async def proxy_to_agent(agent_record, request, authenticated_username=""):
-    upstream_url = f"{agent_record.upstream_url}{request.url.path}"
+def upstream_request_url(agent_record, request):
+    upstream_url = f"{agent_record.upstream_origin}{request.url.path}"
     if request.url.query:
         upstream_url = f"{upstream_url}?{request.url.query}"
+    return upstream_url
+
+
+def upstream_client_for_agent(request, agent_record):
+    if not agent_record.upstream_socket:
+        return request.app.state.client
+
+    uds_clients = getattr(request.app.state, "uds_clients", None)
+    if uds_clients is None:
+        uds_clients = {}
+        request.app.state.uds_clients = uds_clients
+
+    client = uds_clients.get(agent_record.upstream_socket)
+    if client is None:
+        client = httpx.AsyncClient(
+            timeout=60.0,
+            follow_redirects=False,
+            transport=httpx.AsyncHTTPTransport(uds=agent_record.upstream_socket),
+        )
+        uds_clients[agent_record.upstream_socket] = client
+
+    return client
+
+
+async def proxy_to_agent(agent_record, request, authenticated_username=""):
+    upstream_url = upstream_request_url(agent_record, request)
+    upstream_client = upstream_client_for_agent(request, agent_record)
 
     log_debug_event(
         "proxy_forward",
@@ -625,7 +669,7 @@ async def proxy_to_agent(agent_record, request, authenticated_username=""):
     )
 
     try:
-        upstream_response = await request.app.state.client.request(
+        upstream_response = await upstream_client.request(
             method=request.method,
             url=upstream_url,
             headers=upstream_headers(request, authenticated_username=authenticated_username),
@@ -643,7 +687,7 @@ async def proxy_to_agent(agent_record, request, authenticated_username=""):
     return Response(
         content=upstream_response.content,
         status_code=upstream_response.status_code,
-        headers=response_headers(upstream_response, agent_record.upstream_url),
+        headers=response_headers(upstream_response, agent_record.upstream_origin),
     )
 
 

@@ -15,6 +15,5 @@ ExecStart=runagent /usr/bin/podman pod create \
 		--replace \
 		--name hermes-pod-%i \
 		--infra-name hermes-pod-%i-infra \
-		--network=slirp4netns:allow_host_loopback=true \
-		--publish 127.0.0.1:${AGENT_DASHBOARD_HOST_PORT}:9120
+		--network=slirp4netns:allow_host_loopback=true
 ExecStop=-/usr/bin/podman pod rm --force hermes-pod-%i

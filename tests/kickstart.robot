@@ -60,7 +60,7 @@ Check if one started agent creates one runtime
     ${volume_name} =    Execute Command    runuser -u ${module_id} -- bash -lc 'podman volume inspect --format "{{.Name}}" hermes-agent-1-home'
     ${agent_name_env} =    Execute Command    grep '^AGENT_NAME=' ${agent_env} | cut -d= -f2-
     ${agent_role_env} =    Execute Command    grep '^AGENT_ROLE=' ${agent_env} | cut -d= -f2-
-    ${agent_dashboard_port} =    Execute Command    grep '^AGENT_DASHBOARD_HOST_PORT=' ${agent_env} | cut -d= -f2-
+    ${agent_dashboard_socket} =    Execute Command    find ${module_home} -maxdepth 8 -path '*/dashboard-sockets/agent-1.sock' -print -quit
     ${agent_secret} =    Execute Command    grep '^HERMES_AGENT_SECRET=' ${agent_secrets} | cut -d= -f2-
     ${secret_key_count} =    Execute Command    grep -Ec '^(HERMES_AGENT_SECRET|SMTP_PASSWORD)=' ${agent_secrets}
     ${route_output} =    Execute Command    api-cli run module/traefik1/get-route --data '{"instance":"${module_id}-hermes-agent-1"}'
@@ -86,7 +86,7 @@ Check if one started agent creates one runtime
     Should Be Equal    ${service_output}    active
     Should Be Equal    ${agent_name_env}    Foo Bar
     Should Be Equal    ${agent_role_env}    developer
-    Should Not Be Empty    ${agent_dashboard_port}
+    Should Not Be Empty    ${agent_dashboard_socket}
     Should Not Be Empty    ${agent_secret}
     Should Be Equal    ${secret_key_count}    1
     Should Be Equal    ${route_host}    agents.example.test
