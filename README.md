@@ -24,19 +24,36 @@ From the UI, configure:
 
 Configuration will create the agents and publish the dashboard at `https://hermes.example.com/` with per-agent authentication and routing.
 
-From dashboad, you can setup a Telegram and everithing
+From dashboard, you can setup a Telegram and everything else, but Dashboard is still early and setting it up from command line is a lot easier.
 
 **Notes**:
 
 * the module does not support multiple agents with the same `allowed_user` value.
 * the Dashboard Web UI is build every time the container starts, so it takes a bit of time to be available after the agent service is started.
-* after changing the configuration from dashboard, the agent service needs to be restarted to apply the new configuration. At the moment it can be done with the /restart command, but the first time you coinfigure a messaging platform you need to restart the service from terminal with `systemctl --user restart hermes@<id>.service` or saving changes from NS8 ui
+* after changing the configuration from dashboard, the agent service needs to be restarted to apply the new configuration. At the moment it can be done with the /restart command, but the first time you configure a messaging platform you need to restart the service from terminal with `systemctl --user restart hermes@<id>.service` or saving changes from NS8 ui
 * At the moment, saving changes from NS8 UI restart all the agents, but in the future we will implement a smarter logic to restart only the agent that needs it.
 
 
 ## Command line
 
-Not really necessary for normal operation, but you can also manage the agents from the command line:
+Not mandatory for normal operation, but first configuration is a lot easier from the command line.
+
+Configure LLM provider and messaging platform for agent #1:
+```bash
+runagent -m hermes-agent1 podman exec -it hermes-1 hermes setup
+```
+
+**Tip**: *If you have OpenAI ChatGPT Plus subscription, you can select OpenAI Codex, than authenticate with OAuth, and the agent will be able to use GPT-5.4 with a shared token that doesn't require per-agent OpenAI API keys.*
+
+
+Accessing the agent #1 console:
+```bash
+runagent -m hermes-agent1 podman exec -it hermes-1 hermes
+```
+
+See [Hermes Agent documentation](https://hermes-agent.nousresearch.com/docs) for more details on the available commands and configuration options.
+
+### Other useful commands:
 
 Restart agent #1 from command line
 ```bash
@@ -46,11 +63,6 @@ runagent -m hermes-agent1 systemctl --user restart hermes@1
 Accessing the agent #3 console:
 ```bash
 runagent -m hermes-agent1 podman exec -it hermes-3 hermes
-```
-
-Configure LLM provider for agent #2:
-```bash
-runagent -m hermes-agent1 podman exec -it hermes-2 hermes setup
 ```
 
 Configure Telegram or other messaging platform for agent #2:
