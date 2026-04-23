@@ -42,6 +42,5 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     "$VENV_BIN/python" "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
-"$VENV_BIN/hermes" gateway run &
-
+"$VENV_BIN/hermes" dashboard --host 127.0.0.1 --port 9120 --insecure --no-open&
 exec "$@"

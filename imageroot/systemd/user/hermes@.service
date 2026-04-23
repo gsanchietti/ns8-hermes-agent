@@ -8,7 +8,7 @@ Environment=PODMAN_SYSTEMD_UNIT=%n
 EnvironmentFile=-%S/state/environment
 EnvironmentFile=-%S/state/agent_%i.env
 WorkingDirectory=%S/state
-Restart=on-failure
+Restart=always
 KillMode=none
 Type=notify
 NotifyAccess=all
@@ -29,7 +29,7 @@ ExecStart=runagent /usr/bin/podman run \
 		--volume hermes-agent-%i-home:/opt/data:z \
 		--tz=${TIMEZONE} \
 		${HERMES_AGENT_HERMES_IMAGE} \
-		hermes dashboard --host 127.0.0.1 --port 9120 --insecure --no-open
+		hermes gateway run
 ExecStop=/usr/bin/podman stop --ignore --time 10 hermes-%i
 ExecStopPost=-/usr/bin/podman rm --force hermes-%i
 TimeoutStopSec=70
