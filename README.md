@@ -4,7 +4,7 @@
 
 # ns8-hermes-agent
 
-`ns8-hermes-agent` is an NS8 module that manages one or more Hermes Agent runtimes.
+`ns8-hermes-agent` is an NS8 module that manages one or more [Hermes Agent](https://hermes-agent.nousresearch.com/) runtimes.
 
 <img width="1397" height="761" alt="image" src="https://github.com/user-attachments/assets/631c598a-9553-4a21-8ff5-f002568f0bbe" />
 
@@ -13,34 +13,49 @@
 Install the module with
 
 ```bash
-add-module ghcr.io/nethserver/hermes-agent:latest 1
-```
-Configure at least one agent from the UI or with:
-
-```bash
-api-cli run module/hermes-agent1/configure-module --data '{"agents":[{"id":1,"name":"Foo Bar","role":"developer","status":"start"}]}'
+add-module ghcr.io/stell0/hermes-agent:latest 1
 ```
 
-Configure the LLM provider from Hermes console
+From the UI, configure:
+
+* a virtualhost for the agent dashboard like `hermes.example.com`
+* select a user domain from the dropdown, which binds the module to that domain and populates the `allowed_user` selectors for each agent
+* one or more agents with unique `allowed_user` values from the selected user domain
+
+Configuration will create the agents and publish the dashboard at `https://hermes.example.com/` with per-agent authentication and routing.
+
+From dashboad, you can setup a Telegram and everithing
+
+**Notes**:
+
+* the module does not support multiple agents with the same `allowed_user` value.
+* the Dashboard Web UI is build every time the container starts, so it takes a bit of time to be available after the agent service is started.
+* after changing the configuration from dashboard, the agent service needs to be restarted to apply the new configuration. At the moment it can be done with the /restart command, but the first time you coinfigure a messaging platform you need to restart the service from terminal with `systemctl --user restart hermes@<id>.service` or saving changes from NS8 ui
+* At the moment, saving changes from NS8 UI restart all the agents, but in the future we will implement a smarter logic to restart only the agent that needs it.
+
+
+## Command line
+
+Not really necessary for normal operation, but you can also manage the agents from the command line:
+
+Restart agent #1 from command line
 ```bash
-runagent -m hermes-agent1 podman exec -it hermes-1 hermes setup
+runagent -m hermes-agent1 systemctl --user restart hermes@1
 ```
 
-Configure a messaging platform like Telegram from Hermes console
+Accessing the agent #3 console:
 ```bash
-runagent -m hermes-agent1 podman exec -it hermes-1 hermes gateway setup
-```
-When you are done, exit the console and restart the agent to pick up the new configuration:
-
-```bash
-runagent -m hermes-agent1 systemctl --user restart hermes@1.service
+runagent -m hermes-agent1 podman exec -it hermes-3 hermes
 ```
 
-## Accessing the agent console
-You can access the Hermes console for an agent with:
-
+Configure LLM provider for agent #2:
 ```bash
-runagent -m hermes-agent1 podman exec -it hermes-1 hermes
+runagent -m hermes-agent1 podman exec -it hermes-2 hermes setup
+```
+
+Configure Telegram or other messaging platform for agent #2:
+```bash
+runagent -m hermes-agent1 podman exec -it hermes-2 hermes gateway setup
 ```
 
 ## Repository guidelines
