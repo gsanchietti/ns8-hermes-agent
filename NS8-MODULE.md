@@ -31,7 +31,7 @@ The module publishes:
 
 `build-images.sh` builds all four images.
 
-The module image reserves one TCP port and declares `cluster:accountconsumer traefik@node:routeadm node:portsadm` authorizations so it can bind one NS8 user domain, publish one shared auth route, and repair the shared auth listener reservation during upgrades.
+The module image reserves one TCP port and declares `cluster:accountconsumer traefik@node:routeadm node:portsadm` authorizations so it can bind one NS8 user domain and publish one shared auth route.
 
 ## Input model
 
@@ -123,7 +123,7 @@ Per-agent Podman volume:
 - `hermes-agent-<id>-home`, mounted at `/opt/data`
 - bootstrap-managed content inside the volume includes the seeded `SOUL.md`, `.env`, and `config.yaml`, plus the runtime directory skeleton used by Hermes
 
-The active managed Traefik route instance is `<module_id>-hermes-auth`; legacy `<module_id>-hermes-agent-<id>` route names are retained only as cleanup targets during upgrades. Hermes home volume names remain `hermes-agent-<id>-home` for compatibility across the runtime refactor.
+The active managed Traefik route instance is `<module_id>-hermes-auth`. Hermes home volume names are `hermes-agent-<id>-home`.
 
 Shared auth state files:
 
@@ -199,21 +199,21 @@ Seeding is strict first-write only: later agent edits preserve existing `SOUL.md
 - `10initialize-state`: persists `TIMEZONE` and creates `agents/` plus `secrets.env`
 - `20discover-smarthost`: refreshes shared SMTP settings
 - does not create or start any agent runtime
-- relies on the module image label to reserve the shared auth listener `TCP_PORT`; older upgraded installs may still retain a larger `TCP_PORTS_RANGE`, but it is no longer required
+- relies on the module image label to reserve the shared auth listener `TCP_PORT`
 
 ### `configure-module`
 
 - `10validate-input`: validates the submitted agent list, optional shared virtualhost, optional shared `user_domain`, and optional shared `lets_encrypt`
 - `20persist-shared-env`: persists `base_virtualhost`, optional shared `user_domain`, plus `lets_encrypt`, tracks previous values for route cleanup, and backfills `TIMEZONE` when missing
 - `25configure-user-domain`: binds or unbinds the module relation to the selected NS8 user domain
-- `30remove-deleted-routes`: deletes managed Traefik routes for removed agents when routing is active, including one-time certificate cleanup when all routes are removed
-- `40remove-deleted-agents`: stops removed services, removes removed pods and containers including `hermes-socket-<id>` plus legacy `hermes-dashboard-<id>`, `hermes-auth-<id>`, and `hermes-agent-<id>` leftovers, and delegates generated-state cleanup to `remove-agent-state`
+- `30remove-deleted-routes`: reserved lifecycle slot; removed-agent route cleanup is no longer needed because the module manages only the shared Traefik route
+- `40remove-deleted-agents`: stops removed services, removes removed pods and containers including `hermes-socket-<id>`, and delegates generated-state cleanup to `remove-agent-state`
 - `50write-agent-metadata`: writes one `metadata.json` file per desired agent, including persisted `allowed_user`
 - `60refresh-shared-settings`: runs `discover-smarthost`
 - `70sync-agent-runtime`: runs `sync-agent-runtime`, which now also fans out `AGENT_ALLOWED_USER` plus LDAP runtime env and secrets when `USER_DOMAIN` is set and writes `authproxy_agents.json` `upstream_socket` entries
 - `75seed-agent-home`: runs a one-shot Hermes container to seed first-time `/opt/data/SOUL.md` and `/opt/data/.env` content from checked-in templates
 - `80reload-systemd`: reloads the user systemd manager
-- `90reconcile-desired-routes`: creates, updates, or clears the shared Traefik route instance `<module>-hermes-auth` when `base_virtualhost` is configured or explicitly changed, and also deletes retained legacy per-agent route instances including `lets_encrypt` cleanup for host changes or shared TLS disable events
+- `90reconcile-desired-routes`: creates, updates, or clears the shared Traefik route instance `<module>-hermes-auth` when `base_virtualhost` is configured or explicitly changed, including `lets_encrypt` cleanup for host changes or shared TLS disable events
 - `95reconcile-agent-services`: enables and starts both `hermes@<id>.service` and `hermes-socket@<id>.service` for desired `start` agents, disables or stops the rest, and manages the shared `hermes-auth.service` when publishing is active
 
 ### `list-user-domains`
@@ -234,16 +234,10 @@ Seeding is strict first-write only: later agent edits preserve existing `SOUL.md
 
 ### `destroy-module`
 
-- `10remove-routes`: removes every managed Traefik route, including one-time certificate cleanup when shared `lets_encrypt` is enabled
+- `10remove-routes`: removes the shared Traefik route, including one-time certificate cleanup when shared `lets_encrypt` is enabled
 - `20stop-services`: disables and stops every known `hermes@<id>.service`, stops each per-agent pod, removes the Hermes and auth proxy containers if present
 - `30remove-agent-state`: delegates generated-state cleanup for each known agent to `remove-agent-state`
 - `40remove-agents-root`: removes the top-level `agents/` directory
-
-### `update-module`
-
-- runs `update-module.d/10ensure_tcp_ports`
-- backfills `TCP_PORT` and `TCP_PORTS_RANGE` on older instances that predate the per-agent dashboard port reservation
-- uses the NS8 port-allocation API instead of inventing unmanaged host ports locally
 
 ## Testing contract
 

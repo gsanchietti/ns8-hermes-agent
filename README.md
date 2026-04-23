@@ -13,7 +13,7 @@
 Install the module with
 
 ```bash
-add-module ghcr.io/stell0/hermes-agent:latest 1
+add-module ghcr.io/nethserver/hermes-agent:latest 1
 ```
 Configure at least one agent from the UI or with:
 
@@ -60,9 +60,8 @@ The current implementation is intentionally small:
 - `configure-module` validates the submitted agent list plus the shared dashboard virtualhost, optional shared `user_domain`, and optional `lets_encrypt` switch, binds the selected NS8 user domain when set, stores one metadata file per agent, generates per-agent runtime files plus shared auth runtime files, seeds first-time agent home content, reconciles the shared Traefik route, and enables or disables the corresponding `hermes@<id>.service` instances plus the shared `hermes-auth.service` when publishing is active.
 - `get-configuration` returns the shared `base_virtualhost`, the shared `user_domain`, the shared `lets_encrypt` setting, and the configured agents with their persisted desired `status` plus `allowed_user`.
 - `get-agent-runtime` returns live per-agent `runtime_status` derived from the current systemd service state.
-- `destroy-module` stops agent services, removes agent pods and containers, stops the shared auth service, deletes the managed Traefik route plus retained legacy per-agent route instances, and deletes generated per-agent files plus per-agent Hermes home volumes.
-- `update-module` ensures `TCP_PORT` exists for the shared auth listener. Older upgraded installs may still retain a larger `TCP_PORTS_RANGE`, but per-agent dashboard host ports are no longer required.
-- `discover-smarthost` still merges shared SMTP settings into `environment` and `secrets.env`.
+- `destroy-module` stops agent services, removes agent pods and containers, stops the shared auth service, deletes the managed Traefik route, and deletes generated per-agent files plus per-agent Hermes home volumes.
+- `discover-smarthost` merges shared SMTP settings into `environment` and `secrets.env`.
 
 ## Generated state
 
@@ -86,7 +85,7 @@ Per-agent Podman volume:
 - `hermes-agent-<id>-home`, mounted at `/opt/data`
 - bootstrap-managed content inside the volume includes the seeded `SOUL.md`, `.env`, and `config.yaml`, plus the runtime directory skeleton used by Hermes
 
-Operator-visible runtime names are `hermes-pod-<id>` for the pod, `hermes-<id>` for the per-agent Hermes container, `hermes-socket-<id>` for the per-agent socket relay container, `hermes-auth` for the shared auth proxy container, `hermes@.service` for the per-agent primary systemd unit, `hermes-socket@.service` for the per-agent socket sidecar unit, and `hermes-auth.service` for the shared auth unit. The active Traefik route instance is `<module_id>-hermes-auth`; legacy `<module_id>-hermes-agent-<id>` route names are retained only as cleanup targets during upgrades. The Hermes home volume name remains `hermes-agent-<id>-home` for compatibility across the refactor.
+Operator-visible runtime names are `hermes-pod-<id>` for the pod, `hermes-<id>` for the per-agent Hermes container, `hermes-socket-<id>` for the per-agent socket relay container, `hermes-auth` for the shared auth proxy container, `hermes@.service` for the per-agent primary systemd unit, `hermes-socket@.service` for the per-agent socket sidecar unit, and `hermes-auth.service` for the shared auth unit. The active Traefik route instance is `<module_id>-hermes-auth`, and the Hermes home volume name is `hermes-agent-<id>-home`.
 
 ## Repository layout
 

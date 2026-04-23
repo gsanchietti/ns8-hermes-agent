@@ -38,7 +38,6 @@ RECONCILE_DESIRED_ROUTES_PATH = CONFIGURE_MODULE_ACTION_DIR / "90reconcile-desir
 DESTROY_REMOVE_ROUTES_PATH = DESTROY_MODULE_ACTION_DIR / "10remove-routes"
 GET_CONFIGURATION_PATH = ROOT / "imageroot" / "actions" / "get-configuration" / "20read"
 GET_AGENT_RUNTIME_PATH = ROOT / "imageroot" / "actions" / "get-agent-runtime" / "10read"
-UPDATE_TCP_PORTS_PATH = ROOT / "imageroot" / "update-module.d" / "10ensure_tcp_ports"
 SMARTHOST_CHANGED_EVENT_PATH = ROOT / "imageroot" / "events" / "smarthost-changed" / "10reload_services"
 LIST_USER_DOMAINS_PATH = ROOT / "imageroot" / "actions" / "list-user-domains" / "10read"
 LIST_DOMAIN_USERS_PATH = ROOT / "imageroot" / "actions" / "list-domain-users" / "10read"
@@ -164,7 +163,6 @@ def persist_process_environment(path="environment"):
         "MODULE_ID",
         "TIMEZONE",
         "TCP_PORT",
-        "TCP_PORTS_RANGE",
         "BASE_VIRTUALHOST",
         "LETS_ENCRYPT",
     ):
@@ -986,11 +984,7 @@ class HermesModuleStateTest(unittest.TestCase):
             else:
                 del sys.modules["agent"]
 
-    def test_route_instance_name_preserves_split_contract(self):
-        self.assertEqual(
-            self.state.route_instance_name(1, module_id="hermes-agent1"),
-            "hermes-agent1-hermes-agent-1",
-        )
+    def test_shared_route_instance_name_preserves_contract(self):
         self.assertEqual(
             self.state.shared_route_instance_name(module_id="hermes-agent1"),
             "hermes-agent1-hermes-auth",
@@ -1163,7 +1157,6 @@ class HermesModuleStateTest(unittest.TestCase):
                 self.state.ENVIRONMENT_FILE,
                 {
                     "TIMEZONE": "UTC",
-                    "TCP_PORTS_RANGE": "20001-20031",
                     "BASE_VIRTUALHOST": "agents.example.org",
                     "USER_DOMAIN": "example.org",
                     "SMTP_ENABLED": "1",
@@ -1282,7 +1275,6 @@ class HermesModuleStateTest(unittest.TestCase):
                 self.state.ENVIRONMENT_FILE,
                 {
                     "TIMEZONE": "UTC",
-                    "TCP_PORTS_RANGE": "20001-20031",
                     "SMTP_HOST": "smtp.example.org",
                 },
             )
@@ -1323,7 +1315,7 @@ class HermesModuleStateTest(unittest.TestCase):
             )
             write_envfile(
                 self.state.ENVIRONMENT_FILE,
-                {"TIMEZONE": "UTC", "TCP_PORTS_RANGE": "20001-20031"},
+                {"TIMEZONE": "UTC"},
             )
             write_envfile(self.state.SHARED_SECRETS_ENVFILE, {"SMTP_PASSWORD": "old-pass"})
 
@@ -1563,7 +1555,6 @@ class HermesModuleStateTest(unittest.TestCase):
                     {
                         "MODULE_ID": "hermes-agent1",
                         "TCP_PORT": "20001",
-                        "TCP_PORTS_RANGE": "20001-20031",
                         self.state.BASE_VIRTUALHOST_ENV: "new.example.org",
                         self.state.BASE_VIRTUALHOST_PREVIOUS_ENV: "old.example.org",
                         self.state.LETS_ENCRYPT_ENV: "true",
@@ -1582,13 +1573,6 @@ class HermesModuleStateTest(unittest.TestCase):
                             data={
                                 "instance": "hermes-agent1-hermes-auth",
                                 "lets_encrypt_cleanup": True,
-                            },
-                        ),
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={
-                                "instance": "hermes-agent1-hermes-agent-1",
                             },
                         ),
                         mock.call(
@@ -1655,7 +1639,6 @@ class HermesModuleStateTest(unittest.TestCase):
                     {
                         "MODULE_ID": "hermes-agent1",
                         "TCP_PORT": "20001",
-                        "TCP_PORTS_RANGE": "20001-20031",
                         self.state.BASE_VIRTUALHOST_ENV: "agents.example.org",
                         self.state.LETS_ENCRYPT_ENV: "false",
                         self.state.LETS_ENCRYPT_PREVIOUS_ENV: "true",
@@ -1667,11 +1650,6 @@ class HermesModuleStateTest(unittest.TestCase):
                 self.assertEqual(
                     agent_tasks_stub.run.call_args_list,
                     [
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={"instance": "hermes-agent1-hermes-agent-1"},
-                        ),
                         mock.call(
                             agent_id="module/traefik1",
                             action="set-route",
@@ -1697,7 +1675,7 @@ class HermesModuleStateTest(unittest.TestCase):
             elif "agent.tasks" in sys.modules:
                 del sys.modules["agent.tasks"]
 
-    def test_remove_deleted_routes_cleans_certificate_once_for_last_removed_agent(self):
+    def test_remove_deleted_routes_is_a_noop(self):
         original_agent = sys.modules.get("agent")
         original_agent_tasks = sys.modules.get("agent.tasks")
         agent_tasks_stub = types.ModuleType("agent.tasks")
@@ -1731,14 +1709,7 @@ class HermesModuleStateTest(unittest.TestCase):
                         run_name="__main__",
                     )
 
-                agent_tasks_stub.run.assert_called_once_with(
-                    agent_id="module/traefik1",
-                    action="delete-route",
-                    data={
-                        "instance": "hermes-agent1-hermes-agent-1",
-                        "lets_encrypt_cleanup": True,
-                    },
-                )
+                agent_tasks_stub.run.assert_not_called()
         finally:
             if original_agent is not None:
                 sys.modules["agent"] = original_agent
@@ -1758,7 +1729,7 @@ class HermesModuleStateTest(unittest.TestCase):
             )
             write_envfile(
                 self.state.ENVIRONMENT_FILE,
-                {"TIMEZONE": "UTC", "TCP_PORTS_RANGE": "20001-20031"},
+                {"TIMEZONE": "UTC"},
             )
             write_envfile(
                 Path("agent_3_secrets.env"),
@@ -1781,71 +1752,6 @@ class HermesModuleStateTest(unittest.TestCase):
             self.assertEqual(agent_secrets["HERMES_AGENT_SECRET"], "preserved")
             self.assertEqual(agent_secrets["SMTP_PASSWORD"], "new-pass")
             self.assertEqual(set(agent_secrets), {"HERMES_AGENT_SECRET", "SMTP_PASSWORD"})
-
-    def test_ensure_tcp_ports_environment_keeps_existing_valid_range(self):
-        allocator = mock.Mock()
-
-        env_patch = self.state.ensure_tcp_ports_environment(
-            {
-                "TCP_PORT": "20001",
-                "TCP_PORTS_RANGE": "20001-20031",
-            },
-            allocate_ports=allocator,
-        )
-
-        self.assertEqual(env_patch, {})
-        allocator.assert_not_called()
-
-    def test_ensure_tcp_ports_environment_repairs_missing_tcp_port(self):
-        allocator = mock.Mock()
-
-        env_patch = self.state.ensure_tcp_ports_environment(
-            {
-                "TCP_PORTS_RANGE": "20001-20031",
-            },
-            allocate_ports=allocator,
-        )
-
-        self.assertEqual(env_patch, {"TCP_PORT": "20001"})
-        allocator.assert_not_called()
-
-    def test_ensure_tcp_ports_environment_reallocates_missing_range(self):
-        allocator = mock.Mock(return_value=(21000, 21030))
-
-        env_patch = self.state.ensure_tcp_ports_environment({}, allocate_ports=allocator)
-
-        self.assertEqual(
-            env_patch,
-            {
-                "TCP_PORT": "21000",
-            },
-        )
-        allocator.assert_called_once_with(self.state.RESERVED_TCP_PORTS, "tcp")
-
-    def test_update_module_repairs_missing_tcp_ports_range(self):
-        original_agent = sys.modules.get("agent")
-        agent_stub = types.ModuleType("agent")
-        setattr(agent_stub, "allocate_ports", mock.Mock(return_value=(22000, 22030)))
-        setattr(agent_stub, "mset_env", mock.Mock())
-        sys.modules["agent"] = agent_stub
-
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
-                write_envfile(self.state.ENVIRONMENT_FILE, {"MODULE_ID": "hermes-agent1"})
-
-                runpy.run_path(str(UPDATE_TCP_PORTS_PATH), run_name="__main__")
-        finally:
-            if original_agent is not None:
-                sys.modules["agent"] = original_agent
-            else:
-                del sys.modules["agent"]
-
-        agent_stub.allocate_ports.assert_called_once_with(self.state.RESERVED_TCP_PORTS, "tcp")
-        agent_stub.mset_env.assert_called_once_with(
-            {
-                "TCP_PORT": "22000",
-            }
-        )
 
     def test_configure_module_reconciles_removed_and_started_agents(self):
         original_agent = sys.modules.get("agent")
@@ -1900,7 +1806,6 @@ class HermesModuleStateTest(unittest.TestCase):
                     {
                         "MODULE_ID": "hermes-agent1",
                         "TIMEZONE": "UTC",
-                        "TCP_PORTS_RANGE": "20001-20031",
                         "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:test",
                     },
                     clear=False,
@@ -1924,25 +1829,20 @@ class HermesModuleStateTest(unittest.TestCase):
                 agent_stub.bind_user_domains.assert_called_once_with([])
                 command_list = [call.args[0] for call in run_command.call_args_list]
                 self.assertEqual(
-                    command_list[:12],
+                    command_list[:6],
                     [
                         ["systemctl", "--user", "disable", "--now", "hermes-socket@2.service"],
                         ["systemctl", "--user", "disable", "--now", "hermes@2.service"],
-                        ["systemctl", "--user", "disable", "--now", "hermes-auth@2.service"],
                         ["systemctl", "--user", "stop", "hermes-pod@2.service"],
-                        ["systemctl", "--user", "disable", "--now", "hermes-agent@2.service"],
                         ["podman", "pod", "rm", "--force", "hermes-pod-2"],
                         ["podman", "rm", "--force", "hermes-2"],
                         ["podman", "rm", "--force", "hermes-socket-2"],
-                        ["podman", "rm", "--force", "hermes-dashboard-2"],
-                        ["podman", "rm", "--force", "hermes-auth-2"],
-                        ["podman", "rm", "--force", "hermes-agent-2"],
-                        ["runagent", "remove-agent-state", "--agent-id", "2"],
                     ],
                 )
                 self.assertEqual(
-                    command_list[12:14],
+                    command_list[6:9],
                     [
+                        ["runagent", "remove-agent-state", "--agent-id", "2"],
                         ["podman", "volume", "exists", "hermes-agent-2-home"],
                         ["podman", "volume", "rm", "--force", "hermes-agent-2-home"],
                     ],
@@ -1998,7 +1898,6 @@ class HermesModuleStateTest(unittest.TestCase):
                         "MODULE_ID": "hermes-agent1",
                         "TIMEZONE": "UTC",
                         "TCP_PORT": "20001",
-                        "TCP_PORTS_RANGE": "20001-20031",
                     },
                 )
 
@@ -2042,7 +1941,6 @@ class HermesModuleStateTest(unittest.TestCase):
                         "MODULE_ID": "hermes-agent1",
                         "TIMEZONE": "UTC",
                         "TCP_PORT": "20001",
-                        "TCP_PORTS_RANGE": "20001-20031",
                         "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:test",
                     },
                     clear=False,
@@ -2062,11 +1960,6 @@ class HermesModuleStateTest(unittest.TestCase):
                 self.assertEqual(
                     agent_tasks_stub.run.call_args_list,
                     [
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={"instance": "hermes-agent1-hermes-agent-1"},
-                        ),
                         mock.call(
                             agent_id="module/traefik1",
                             action="set-route",
@@ -2130,7 +2023,6 @@ class HermesModuleStateTest(unittest.TestCase):
                     {
                         "MODULE_ID": "hermes-agent1",
                         "TIMEZONE": "UTC",
-                        "TCP_PORTS_RANGE": "20001-20031",
                         "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:test",
                     },
                     clear=False,
@@ -2212,7 +2104,6 @@ class HermesModuleStateTest(unittest.TestCase):
                     {
                         "MODULE_ID": "hermes-agent1",
                         "TIMEZONE": "UTC",
-                        "TCP_PORTS_RANGE": "20001-20031",
                         "BASE_VIRTUALHOST": "agents.example.org",
                         "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:test",
                     },
@@ -2223,16 +2114,6 @@ class HermesModuleStateTest(unittest.TestCase):
                 self.assertEqual(
                     agent_tasks_stub.run.call_args_list,
                     [
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={"instance": "hermes-agent1-hermes-agent-2"},
-                        ),
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={"instance": "hermes-agent1-hermes-agent-1"},
-                        ),
                         mock.call(
                             agent_id="module/traefik1",
                             action="delete-route",
@@ -2298,11 +2179,6 @@ class HermesModuleStateTest(unittest.TestCase):
                             action="delete-route",
                             data={"instance": "hermes-agent1-hermes-auth"},
                         ),
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={"instance": "hermes-agent1-hermes-agent-4"},
-                        ),
                     ],
                 )
                 self.assertEqual(
@@ -2322,23 +2198,12 @@ class HermesModuleStateTest(unittest.TestCase):
                             check=False,
                         ),
                         mock.call(
-                            ["systemctl", "--user", "disable", "--now", "hermes-auth@4.service"],
-                            check=False,
-                        ),
-                        mock.call(
                             ["systemctl", "--user", "stop", "hermes-pod@4.service"],
-                            check=False,
-                        ),
-                        mock.call(
-                            ["systemctl", "--user", "disable", "--now", "hermes-agent@4.service"],
                             check=False,
                         ),
                         mock.call(["podman", "pod", "rm", "--force", "hermes-pod-4"], check=False),
                         mock.call(["podman", "rm", "--force", "hermes-4"], check=False),
                         mock.call(["podman", "rm", "--force", "hermes-socket-4"], check=False),
-                        mock.call(["podman", "rm", "--force", "hermes-dashboard-4"], check=False),
-                        mock.call(["podman", "rm", "--force", "hermes-auth-4"], check=False),
-                        mock.call(["podman", "rm", "--force", "hermes-agent-4"], check=False),
                         mock.call(["runagent", "remove-agent-state", "--agent-id", "4"], check=True),
                         mock.call(["podman", "volume", "exists", "hermes-agent-4-home"], check=False),
                         mock.call(["podman", "volume", "rm", "--force", "hermes-agent-4-home"], check=True),
@@ -2398,18 +2263,6 @@ class HermesModuleStateTest(unittest.TestCase):
                                 "instance": "hermes-agent1-hermes-auth",
                                 "lets_encrypt_cleanup": True,
                             },
-                        ),
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={
-                                "instance": "hermes-agent1-hermes-agent-1",
-                            },
-                        ),
-                        mock.call(
-                            agent_id="module/traefik1",
-                            action="delete-route",
-                            data={"instance": "hermes-agent1-hermes-agent-2"},
                         ),
                     ],
                 )

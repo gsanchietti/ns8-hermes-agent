@@ -27,14 +27,14 @@ This document maps the current layout.
 - `configure-module/10validate-input`: validates the submitted `base_virtualhost`, optional shared `user_domain`, optional shared `lets_encrypt`, and agent list including per-agent `allowed_user`.
 - `configure-module/20persist-shared-env`: persists the shared virtualhost, optional shared `user_domain`, plus `lets_encrypt`, tracks previous route values for cleanup, and backfills `TIMEZONE`.
 - `configure-module/25configure-user-domain`: binds or unbinds the module from the selected NS8 user domain after shared settings are persisted.
-- `configure-module/30remove-deleted-routes`: removes managed Traefik routes for removed agents when routing is active, including one-time certificate cleanup when the last managed route disappears.
-- `configure-module/40remove-deleted-agents`: stops removed services, removes removed pods and containers including `hermes-socket-<id>`, cleans legacy single-container leftovers, and delegates generated-state cleanup.
+- `configure-module/30remove-deleted-routes`: reserved lifecycle slot; removed-agent route cleanup is no longer needed because the module manages only the shared Traefik route.
+- `configure-module/40remove-deleted-agents`: stops removed services, removes removed pods and containers including `hermes-socket-<id>`, and delegates generated-state cleanup.
 - `configure-module/50write-agent-metadata`: stores one metadata file per desired agent, including persisted `allowed_user`.
 - `configure-module/60refresh-shared-settings`: refreshes shared SMTP settings via `discover-smarthost`.
 - `configure-module/70sync-agent-runtime`: regenerates `agent_<id>.env` and `agent_<id>_secrets.env`, including the live auth proxy LDAP runtime env, bind secrets, and per-agent `AGENT_ALLOWED_USER` when a shared `user_domain` is configured, and writes `authproxy_agents.json` `upstream_socket` entries.
 - `configure-module/75seed-agent-home`: runs a one-shot Hermes container to seed strict first-write-only `/opt/data/SOUL.md` and `/opt/data/.env` content from checked-in templates.
 - `configure-module/80reload-systemd`: reloads the user systemd manager.
-- `configure-module/90reconcile-desired-routes`: creates, updates, or deletes the shared Traefik auth route for the desired configuration, and cleans retained legacy per-agent routes when the shared host or TLS mode changes.
+- `configure-module/90reconcile-desired-routes`: creates, updates, or deletes the shared Traefik auth route for the desired configuration.
 - `configure-module/95reconcile-agent-services`: enables, starts, stops, or disables `hermes@<id>.service` and `hermes-socket@<id>.service` to match desired state.
 - `configure-module/validate-input.json`: input schema for the shared `base_virtualhost`, optional `user_domain`, shared `lets_encrypt`, and the Hermes `agents` payload including `allowed_user`.
 - `get-configuration/20read`: returns the shared dashboard virtualhost, shared `user_domain`, shared `lets_encrypt` setting, and configured agents with desired persisted status plus `allowed_user`.
@@ -46,8 +46,8 @@ This document maps the current layout.
 - `list-domain-users/10read`: returns the sorted users available in the selected NS8 user domain.
 - `list-domain-users/validate-input.json`: input schema for the domain-user lookup action.
 - `list-domain-users/validate-output.json`: output schema for the domain-user lookup action.
-- `destroy-module/10remove-routes`: removes managed Traefik routes for all known agents, including shared certificate cleanup when `lets_encrypt` is enabled.
-- `destroy-module/20stop-services`: stops known services and removes known pods and containers, including `hermes-socket-<id>` and legacy single-container leftovers.
+- `destroy-module/10remove-routes`: removes the managed shared Traefik route, including shared certificate cleanup when `lets_encrypt` is enabled.
+- `destroy-module/20stop-services`: stops known services and removes known pods and containers, including `hermes-socket-<id>`.
 - `destroy-module/30remove-agent-state`: delegates generated file, directory, and volume cleanup for each known agent.
 - `destroy-module/40remove-agents-root`: removes the top-level `agents/` directory.
 
@@ -63,12 +63,8 @@ This document maps the current layout.
 
 ### `imageroot/pypkg/`
 
-- `hermes_agent_state.py`: small shared helper for metadata validation, env/json file handling, dashboard socket naming, shared auth TCP allocation reuse, and named-volume naming.
+- `hermes_agent_state.py`: small shared helper for metadata validation, env/json file handling, dashboard socket naming, and named-volume naming.
 - `hermes_user_domain.py`: shared helper for user-domain normalization, `Ldapproxy` lookup, LDAP user listing, and generation of per-agent LDAP runtime env and bind secrets.
-
-### `imageroot/update-module.d/`
-
-- `10ensure_tcp_ports`: backfills the managed shared auth `TCP_PORT` during upgrades when older instances are missing it, while tolerating legacy larger `TCP_PORTS_RANGE` values.
 
 ### `imageroot/systemd/user/`
 

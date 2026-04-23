@@ -27,15 +27,10 @@ def stop_disable_agent(agent_id):
     # recreate the declared one-agent/one-pod layout on the next start.
     run(["systemctl", "--user", "disable", "--now", f"hermes-socket@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "disable", "--now", f"hermes@{agent_id}.service"], check=False)
-    run(["systemctl", "--user", "disable", "--now", f"hermes-auth@{agent_id}.service"], check=False)
     run(["systemctl", "--user", "stop", f"hermes-pod@{agent_id}.service"], check=False)
-    run(["systemctl", "--user", "disable", "--now", f"hermes-agent@{agent_id}.service"], check=False)
     run(["podman", "pod", "rm", "--force", f"hermes-pod-{agent_id}"], check=False)
     run(["podman", "rm", "--force", f"hermes-{agent_id}"], check=False)
     run(["podman", "rm", "--force", f"hermes-socket-{agent_id}"], check=False)
-    run(["podman", "rm", "--force", f"hermes-dashboard-{agent_id}"], check=False)
-    run(["podman", "rm", "--force", f"hermes-auth-{agent_id}"], check=False)
-    run(["podman", "rm", "--force", f"hermes-agent-{agent_id}"], check=False)
 
 json.load(sys.stdin)
 desired_agents = read_agents_from_state()
@@ -47,7 +42,6 @@ for agent_data in desired_agents:
         # generated env files instead of reusing stale runtime state.
         run(["systemctl", "--user", "enable", f"hermes@{agent_id}.service"])
         run(["systemctl", "--user", "enable", f"hermes-socket@{agent_id}.service"])
-        run(["systemctl", "--user", "disable", "--now", f"hermes-auth@{agent_id}.service"], check=False)
         run(["systemctl", "--user", "stop", f"hermes-socket@{agent_id}.service"], check=False)
         run(["systemctl", "--user", "stop", f"hermes@{agent_id}.service"], check=False)
         run(["systemctl", "--user", "stop", f"hermes-pod@{agent_id}.service"], check=False)

@@ -17,9 +17,7 @@ from hermes_agent_state import (
     LETS_ENCRYPT_PREVIOUS_ENV,
     TCP_PORT_ENV,
     env_to_bool,
-    list_known_agent_ids,
     read_agents_from_state,
-    route_instance_name,
     shared_route_instance_name,
 )
 
@@ -36,15 +34,6 @@ def delete_route(instance_name, traefik_agent_id, lets_encrypt_cleanup=False):
         data=route_request,
     )
     agent.assert_exp(response["exit_code"] == 0)
-
-
-def delete_legacy_routes(agent_ids, traefik_agent_id):
-    for agent_id in agent_ids:
-        delete_route(
-            route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
-            traefik_agent_id,
-        )
-
 
 def upsert_shared_route(base_virtualhost, lets_encrypt, traefik_agent_id, lets_encrypt_cleanup=False):
     route_request = {
@@ -66,16 +55,12 @@ def upsert_shared_route(base_virtualhost, lets_encrypt, traefik_agent_id, lets_e
 
 request = json.load(sys.stdin)
 
-known_ids = sorted(list_known_agent_ids())
 base_virtualhost = (os.getenv(BASE_VIRTUALHOST_ENV) or "").strip().lower()
 previous_base_virtualhost = (os.getenv(BASE_VIRTUALHOST_PREVIOUS_ENV) or "").strip().lower()
 requested_base_virtualhost = ((request.get("base_virtualhost") or "").strip().lower() if "base_virtualhost" in request else None)
 lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_ENV))
 previous_lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_PREVIOUS_ENV))
 desired_agents = read_agents_from_state()
-
-if not known_ids and not base_virtualhost and requested_base_virtualhost is None and not previous_base_virtualhost:
-    sys.exit(0)
 
 if not base_virtualhost and requested_base_virtualhost is None and not previous_base_virtualhost:
     sys.exit(0)
@@ -99,8 +84,6 @@ if cleanup_previous_host:
         traefik_agent_id,
         lets_encrypt_cleanup=True,
     )
-
-delete_legacy_routes(known_ids, traefik_agent_id)
 
 if base_virtualhost:
     if desired_agents:

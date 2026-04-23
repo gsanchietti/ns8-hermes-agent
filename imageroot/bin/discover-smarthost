@@ -9,7 +9,6 @@ import agent
 import os
 
 SECRETS_ENVFILE = "secrets.env"
-LEGACY_SMARTHOST_ENVFILE = "smarthost.env"
 
 
 def read_optional_envfile(path):
@@ -37,9 +36,6 @@ agent.mset_env(
 secrets_env = read_optional_envfile(SECRETS_ENVFILE)
 secrets_env["SMTP_PASSWORD"] = smtp_settings["password"]
 agent.write_envfile(SECRETS_ENVFILE, secrets_env)
-
-if os.path.exists(LEGACY_SMARTHOST_ENVFILE):
-    os.remove(LEGACY_SMARTHOST_ENVFILE)
 
 # NOTE: Public SMTP settings are merged into the shared environment file,
 #       while secrets are written to secrets.env for Podman `--env-file`.

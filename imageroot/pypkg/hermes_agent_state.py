@@ -16,7 +16,6 @@ AGENT_DASHBOARD_SOCKETS_DIR = Path("dashboard-sockets")
 AUTHPROXY_SOCKET_MOUNT_DIR = "/sockets"
 SOUL_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates" / "SOUL"
 MAX_AGENTS = 30
-RESERVED_TCP_PORTS = 1
 
 ALLOWED_ROLES = (
     "default",
@@ -47,8 +46,6 @@ SMTP_SECRET_KEY = "SMTP_PASSWORD"
 TIMEZONE_ENV = "TIMEZONE"
 TIMEZONE_DEFAULT = "UTC"
 TCP_PORT_ENV = "TCP_PORT"
-TCP_PORTS_ENV = "TCP_PORTS"
-TCP_PORTS_RANGE_ENV = "TCP_PORTS_RANGE"
 BASE_VIRTUALHOST_ENV = "BASE_VIRTUALHOST"
 BASE_VIRTUALHOST_PREVIOUS_ENV = "_HERMES_BASE_VIRTUALHOST_PREVIOUS"
 LETS_ENCRYPT_ENV = "LETS_ENCRYPT"
@@ -145,17 +142,6 @@ def write_jsonfile(path, data):
     write_private_textfile(file_path, f"{json.dumps(data, indent=2)}\n")
 
 
-def route_instance_name(agent_id, module_id=None, shared_environment=None):
-    if shared_environment is None:
-        shared_environment = os.environ
-
-    module_value = module_id or shared_environment.get("MODULE_ID") or os.getenv("MODULE_ID")
-    if not module_value:
-        raise ValueError("MODULE_ID is required to derive route instance names")
-
-    return f"{module_value}-hermes-agent-{agent_id}"
-
-
 def shared_route_instance_name(module_id=None, shared_environment=None):
     if shared_environment is None:
         shared_environment = os.environ
@@ -176,70 +162,6 @@ def agent_dashboard_socket_name(agent_id):
 
 def agent_dashboard_socket_path(agent_id, socket_dir=AUTHPROXY_SOCKET_MOUNT_DIR):
     return str(Path(socket_dir) / agent_dashboard_socket_name(agent_id))
-
-def parse_tcp_ports_range(port_range):
-    normalized_range = (port_range or "").strip()
-    if not normalized_range:
-        raise ValueError(f"missing {TCP_PORTS_RANGE_ENV} in environment")
-
-    start_text, separator, end_text = normalized_range.partition("-")
-    if not separator:
-        raise ValueError(f"invalid {TCP_PORTS_RANGE_ENV} value: {normalized_range}")
-
-    return int(start_text), int(end_text)
-
-
-def build_tcp_ports_environment(start_port, end_port, ports_demand):
-    if end_port - start_port + 1 < ports_demand:
-        raise ValueError(f"{TCP_PORTS_RANGE_ENV} must contain at least {ports_demand} ports")
-
-    environment = {TCP_PORT_ENV: str(start_port)}
-    if ports_demand > 1:
-        environment[TCP_PORTS_RANGE_ENV] = f"{start_port}-{end_port}"
-    if 1 < ports_demand <= 8:
-        environment[TCP_PORTS_ENV] = ",".join(
-            str(port) for port in range(start_port, end_port + 1)
-        )
-
-    return environment
-
-
-def ensure_tcp_ports_environment(shared_environment=None, ports_demand=RESERVED_TCP_PORTS, allocate_ports=None):
-    if shared_environment is None:
-        shared_environment = os.environ
-
-    try:
-        start_port, end_port = parse_tcp_ports_range(shared_environment.get(TCP_PORTS_RANGE_ENV))
-    except ValueError:
-        start_port = None
-        end_port = None
-
-    # Reuse the existing shared auth listener port when present. Older
-    # revisions may still leave a larger range behind, so accept that too.
-    if start_port is not None and end_port is not None and end_port - start_port + 1 >= ports_demand:
-        expected_environment = build_tcp_ports_environment(
-            start_port=start_port,
-            end_port=end_port,
-            ports_demand=ports_demand,
-        )
-        env_patch = {}
-        for env_key, env_value in expected_environment.items():
-            if shared_environment.get(env_key) != env_value:
-                env_patch[env_key] = env_value
-        return env_patch
-
-    if allocate_ports is None:
-        raise ValueError("allocate_ports callback is required")
-
-    allocated_range = allocate_ports(ports_demand, "tcp")
-    if not isinstance(allocated_range, (list, tuple)) or len(allocated_range) != 2:
-        raise ValueError("allocate_ports returned an invalid port range")
-
-    return build_tcp_ports_environment(
-        start_port=int(allocated_range[0]),
-        end_port=int(allocated_range[1]),
-        ports_demand=ports_demand,
-    )
 
 
 def read_agents_from_state():

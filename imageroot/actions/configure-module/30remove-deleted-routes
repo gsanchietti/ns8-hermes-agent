@@ -1,60 +1,7 @@
 #!/usr/bin/env python3
 
 import json
-import os
 import sys
-from pathlib import Path
-
-import agent
-import agent.tasks
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pypkg"))
-
-from hermes_agent_state import (
-    BASE_VIRTUALHOST_ENV,
-    BASE_VIRTUALHOST_PREVIOUS_ENV,
-    LETS_ENCRYPT_ENV,
-    LETS_ENCRYPT_PREVIOUS_ENV,
-    env_to_bool,
-    list_known_agent_ids,
-    route_instance_name,
-)
 
 
-request = json.load(sys.stdin)
-desired_ids = {agent_data["id"] for agent_data in request.get("agents", [])}
-removed_ids = sorted(set(list_known_agent_ids()) - desired_ids)
-requested_base_virtualhost = ((request.get("base_virtualhost") or "").strip().lower() if "base_virtualhost" in request else "")
-current_base_virtualhost = (os.getenv(BASE_VIRTUALHOST_ENV) or "").strip().lower()
-previous_base_virtualhost = (os.getenv(BASE_VIRTUALHOST_PREVIOUS_ENV) or "").strip().lower()
-lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_ENV))
-previous_lets_encrypt = env_to_bool(os.getenv(LETS_ENCRYPT_PREVIOUS_ENV))
-
-if not removed_ids:
-    sys.exit(0)
-
-if not requested_base_virtualhost and not current_base_virtualhost and not previous_base_virtualhost:
-    sys.exit(0)
-
-traefik_agent_id = agent.resolve_agent_id("traefik@node")
-if traefik_agent_id is None:
-    if not current_base_virtualhost and not requested_base_virtualhost and not previous_base_virtualhost:
-        sys.exit(0)
-    raise ValueError("traefik@node route agent not found")
-
-# Traefik only needs one delete request to carry the certificate cleanup flag;
-# the remaining legacy route deletions should leave shared TLS state alone.
-cleanup_removed_routes = not desired_ids and (lets_encrypt or previous_lets_encrypt)
-
-for index, agent_id in enumerate(removed_ids):
-    route_request = {
-        "instance": route_instance_name(agent_id, module_id=os.environ["MODULE_ID"]),
-    }
-    if cleanup_removed_routes and index == 0:
-        route_request["lets_encrypt_cleanup"] = True
-    response = agent.tasks.run(
-        agent_id=traefik_agent_id,
-        action="delete-route",
-        data=route_request,
-    )
-    agent.assert_exp(response["exit_code"] == 0)
+json.load(sys.stdin)
