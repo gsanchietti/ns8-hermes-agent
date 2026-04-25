@@ -5,6 +5,8 @@ LABEL org.opencontainers.image.description="Thin wrapper around the upstream Her
 ENV VIRTUAL_ENV=/opt/hermes/.venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
+USER root
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     curl \
@@ -16,6 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-google-auth-oauthlib \
     vim
 
+USER hermes
+
 RUN pip install --no-cache-dir --break-system-packages \
     ddgs \
     pytesseract \
@@ -23,11 +27,13 @@ RUN pip install --no-cache-dir --break-system-packages \
 
 COPY entrypoint.sh /entrypoint.sh
 
+USER root
+
 RUN cd /opt/hermes/web && npm install && npm run build
 
 RUN apt-get clean autoclean && apt-get autoremove --yes && rm -rf /var/lib/{apt,dpkg,cache,log}/* && touch /var/lib/dpkg/status
+RUN chown -R hermes:hermes /opt/hermes /opt/data
 
-# Build dashboard web interface
-RUN cd /opt/hermes/web && npm install && npm run build
+USER hermes
 
 ENTRYPOINT [ "/entrypoint.sh" ]
