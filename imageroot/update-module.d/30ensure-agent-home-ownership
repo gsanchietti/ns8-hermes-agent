@@ -28,4 +28,4 @@ for agent_id in list_known_agent_ids():
         reset_failed(socket_service_name)
         reset_failed(service_name)
 
-    run(["runagent", "ensure-agent-home-ownership", "--agent-id", str(agent_id), "--run-hermes-update"], check=True)
+    run(["runagent", "ensure-agent-home-ownership", "--agent-id", str(agent_id)], check=True)
