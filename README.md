@@ -13,7 +13,7 @@
 Install the module with
 
 ```bash
-add-module ghcr.io/stell0/hermes-agent:latest 1
+add-module ghcr.io/stell0/hermes-agent:0.2.1 1
 ```
 
 From the UI, configure:
