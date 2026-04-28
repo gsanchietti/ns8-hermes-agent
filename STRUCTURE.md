@@ -60,7 +60,8 @@ This document maps the current layout.
 
 ### `imageroot/update-module.d/`
 
-- `30ensure-agent-home-ownership`: NS8 update hook that repairs every known agent home volume, runs `hermes update` as the image `hermes` user, and then restarts any agent service that was active at update time.
+- `30ensure-agent-home-ownership`: NS8 update hook that repairs every known agent home volume, runs `hermes update` as the image `hermes` user, and clears failed state on any active agent service pair before the later restart step.
+- `80restart`: NS8 update hook that restarts enabled `hermes@<id>.service`, `hermes-socket@<id>.service`, and `hermes-auth.service` units so running containers pick up refreshed images.
 
 ### `imageroot/events/`
 

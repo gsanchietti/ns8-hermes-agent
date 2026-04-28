@@ -37,6 +37,7 @@ UPDATE_MODULE_SCRIPT_DIR = ROOT / "imageroot" / "update-module.d"
 PERSIST_SHARED_ENV_PATH = CONFIGURE_MODULE_ACTION_DIR / "20persist-shared-env"
 SEED_AGENT_HOME_ACTION_PATH = CONFIGURE_MODULE_ACTION_DIR / "75seed-agent-home"
 UPDATE_OWNERSHIP_SCRIPT_PATH = UPDATE_MODULE_SCRIPT_DIR / "30ensure-agent-home-ownership"
+UPDATE_RESTART_SCRIPT_PATH = UPDATE_MODULE_SCRIPT_DIR / "80restart"
 RECONCILE_DESIRED_ROUTES_PATH = CONFIGURE_MODULE_ACTION_DIR / "90reconcile-desired-routes"
 DESTROY_REMOVE_ROUTES_PATH = DESTROY_MODULE_ACTION_DIR / "10remove-routes"
 GET_CONFIGURATION_PATH = ROOT / "imageroot" / "actions" / "get-configuration" / "20read"
@@ -1041,6 +1042,9 @@ class HermesModuleStateTest(unittest.TestCase):
         self.assertIn("Description=Hermes dashboard unix socket sidecar %i", socket_template)
         self.assertIn("Requires=hermes-pod@%i.service hermes@%i.service", socket_template)
         self.assertIn("PartOf=hermes@%i.service", socket_template)
+        self.assertIn("SuccessExitStatus=143 SIGTERM", socket_template)
+        self.assertIn("KillMode=mixed", socket_template)
+        self.assertNotIn("KillMode=none", socket_template)
         self.assertIn("install -d -m 0770 %S/state/dashboard-sockets", socket_template)
         self.assertIn("--name hermes-socket-%i", socket_template)
         self.assertIn("--pod hermes-pod-%i", socket_template)
@@ -1048,6 +1052,7 @@ class HermesModuleStateTest(unittest.TestCase):
         self.assertIn("${HERMES_AGENT_SOCKET_IMAGE}", socket_template)
         self.assertIn("UNIX-LISTEN:/sockets/agent-%i.sock,fork,unlink-early,mode=0660", socket_template)
         self.assertIn("TCP-CONNECT:127.0.0.1:9120", socket_template)
+        self.assertNotIn("ExecStartPost=/bin/sh -c", socket_template)
 
     def test_hermes_containerfile_uses_expected_base_image(self):
         containerfile = HERMES_CONTAINERFILE_PATH.read_text(encoding="utf-8")
@@ -1521,26 +1526,64 @@ class HermesModuleStateTest(unittest.TestCase):
                     ["systemctl", "--user", "is-active", "--quiet", "hermes@1.service"],
                     ["systemctl", "--user", "stop", "hermes-socket@1.service"],
                     ["systemctl", "--user", "stop", "hermes@1.service"],
+                    ["systemctl", "--user", "reset-failed", "hermes-socket@1.service"],
+                    ["systemctl", "--user", "reset-failed", "hermes@1.service"],
                     ["runagent", "ensure-agent-home-ownership", "--agent-id", "1", "--run-hermes-update"],
-                    ["systemctl", "--user", "start", "hermes@1.service"],
-                    ["systemctl", "--user", "start", "hermes-socket@1.service"],
                     ["systemctl", "--user", "is-active", "--quiet", "hermes@3.service"],
                     ["systemctl", "--user", "stop", "hermes-socket@3.service"],
                     ["systemctl", "--user", "stop", "hermes@3.service"],
+                    ["systemctl", "--user", "reset-failed", "hermes-socket@3.service"],
+                    ["systemctl", "--user", "reset-failed", "hermes@3.service"],
                     ["runagent", "ensure-agent-home-ownership", "--agent-id", "3", "--run-hermes-update"],
-                    ["systemctl", "--user", "start", "hermes@3.service"],
-                    ["systemctl", "--user", "start", "hermes-socket@3.service"],
                 ],
             )
-            checked_indexes = [
-                index
-                for index, call in enumerate(run_mock.call_args_list)
-                if call.args[0][:2] != ["systemctl", "--user"]
-                or call.args[0][2:4] != ["is-active", "--quiet"]
-            ]
-            self.assertEqual(checked_indexes, [1, 2, 3, 4, 5, 7, 8, 9, 10, 11])
+            checked_indexes = {5, 11}
             for index, call in enumerate(run_mock.call_args_list):
                 self.assertEqual(call.kwargs.get("check"), index in checked_indexes)
+
+    def test_update_module_script_restarts_enabled_runtime_services(self):
+        enabled_units = {
+            "hermes@1.service": 0,
+            "hermes-socket@1.service": 0,
+            "hermes@3.service": 1,
+            "hermes-socket@3.service": 0,
+            "hermes-auth.service": 0,
+        }
+
+        def run_side_effect(*args, **kwargs):
+            command = args[0]
+            if command[:4] == ["systemctl", "--user", "is-enabled", "--quiet"]:
+                return types.SimpleNamespace(returncode=enabled_units[command[4]])
+
+            return types.SimpleNamespace(returncode=0)
+
+        with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
+            self.state.write_jsonfile(
+                Path("agents") / "1" / "metadata.json",
+                {"id": 1, "name": "One", "role": "developer", "status": "start"},
+            )
+            write_envfile("agent_3.env", {"AGENT_ID": "3"})
+
+            with mock.patch("subprocess.run", side_effect=run_side_effect) as run_mock:
+                runpy.run_path(str(UPDATE_RESTART_SCRIPT_PATH), run_name="__main__")
+
+        logged_commands = [call.args[0] for call in run_mock.call_args_list]
+        self.assertEqual(
+            logged_commands,
+            [
+                ["systemctl", "--user", "is-enabled", "--quiet", "hermes@1.service"],
+                ["systemctl", "--user", "restart", "hermes@1.service"],
+                ["systemctl", "--user", "is-enabled", "--quiet", "hermes-socket@1.service"],
+                ["systemctl", "--user", "restart", "hermes-socket@1.service"],
+                ["systemctl", "--user", "is-enabled", "--quiet", "hermes@3.service"],
+                ["systemctl", "--user", "is-enabled", "--quiet", "hermes-socket@3.service"],
+                ["systemctl", "--user", "restart", "hermes-socket@3.service"],
+                ["systemctl", "--user", "is-enabled", "--quiet", "hermes-auth.service"],
+                ["systemctl", "--user", "restart", "hermes-auth.service"],
+            ],
+        )
+        for index, call in enumerate(run_mock.call_args_list):
+            self.assertEqual(call.kwargs.get("check"), index in {1, 3, 6, 8})
 
     def test_seed_agent_home_action_requires_generated_public_envfile(self):
         with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir):
