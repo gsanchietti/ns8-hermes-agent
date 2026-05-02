@@ -126,7 +126,7 @@ Per-agent Podman volume:
 
 The active managed Traefik route instance is `<module_id>-hermes-auth`. Hermes home volume names are `hermes-agent-<id>-home`.
 
-Shared auth state files (included in backup):
+Shared auth state files (generated, not backed up):
 
 - `authproxy.env`
 - `authproxy_secrets.env`
@@ -242,7 +242,8 @@ Seeding is strict first-write only: later agent edits preserve existing `SOUL.md
 
 ### `restore-module`
 
-- `20configure`: per-agent `agents/<id>/agent.env` is restored directly from the backed-up `agents/` tree by NS8 core; `sync-agent-runtime` is still called to regenerate `authproxy.*` files and re-project LDAP bind secrets after NS8 core restores `agents/`, `secrets/`, and the `hermes-agents-home` volume from a restic snapshot.
+- `06copyenv`: restores only Hermes-managed shared keys from `request['environment']` (`TIMEZONE`, `BASE_VIRTUALHOST`, `USER_DOMAIN`, `LETS_ENCRYPT`) and intentionally ignores core-managed values.
+- `20configure`: reads the restored `agents/` tree and reruns `configure-module` so NS8 restore replays user-domain binding, runtime-file generation, route reconciliation, and service reconciliation after the `hermes-agents-home` volume and canonical state are restored from restic.
 
 ## Testing contract
 

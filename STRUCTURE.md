@@ -22,7 +22,7 @@ This document maps the current layout.
 
 ### `imageroot/etc/`
 
-- `state-include.conf`: declares the backup scope consumed by NS8 core: `state/agents`, `state/secrets`, `state/authproxy.env`, `state/authproxy_secrets.env`, `state/authproxy_agents.json`, and `volumes/hermes-agents-home`.
+- `state-include.conf`: declares the backup scope consumed by NS8 core: `state/agents`, `state/secrets`, and `volumes/hermes-agents-home`. Derived auth proxy files are regenerated after restore and are intentionally excluded.
 
 ### `imageroot/actions/`
 
@@ -54,7 +54,8 @@ This document maps the current layout.
 - `destroy-module/20stop-services`: stops known services and removes known pods and containers, including `hermes-socket-<id>`.
 - `destroy-module/30remove-agent-state`: delegates generated file, directory, and volume cleanup for each known agent.
 - `destroy-module/40remove-agents-root`: removes the top-level `agents/` directory.
-- `restore-module/20configure`: per-agent `agents/<id>/agent.env` is restored directly from the backed-up `agents/` tree by NS8 core; `sync-agent-runtime` is still called to regenerate `authproxy.*` files and re-project LDAP secrets after NS8 core restores `agents/`, `secrets/`, and the `hermes-agents-home` volume from a restic snapshot.
+- `restore-module/06copyenv`: restores only Hermes-managed shared keys from `request['environment']` (`TIMEZONE`, `BASE_VIRTUALHOST`, `USER_DOMAIN`, `LETS_ENCRYPT`) and leaves core-managed values alone.
+- `restore-module/20configure`: reads the restored `agents/` tree and reruns `configure-module` so restore replays user-domain binding, derived runtime generation, route reconciliation, and service reconciliation from canonical restored state.
 
 ### `imageroot/bin/`
 

@@ -33,9 +33,13 @@ BUILD_IMAGES_PATH = ROOT / "build-images.sh"
 CREATE_MODULE_ACTION_DIR = ROOT / "imageroot" / "actions" / "create-module"
 CONFIGURE_MODULE_ACTION_DIR = ROOT / "imageroot" / "actions" / "configure-module"
 DESTROY_MODULE_ACTION_DIR = ROOT / "imageroot" / "actions" / "destroy-module"
+RESTORE_MODULE_ACTION_DIR = ROOT / "imageroot" / "actions" / "restore-module"
 UPDATE_MODULE_SCRIPT_DIR = ROOT / "imageroot" / "update-module.d"
 PERSIST_SHARED_ENV_PATH = CONFIGURE_MODULE_ACTION_DIR / "20persist-shared-env"
 SEED_AGENT_HOME_ACTION_PATH = CONFIGURE_MODULE_ACTION_DIR / "75seed-agent-home"
+RESTORE_COPY_ENV_PATH = RESTORE_MODULE_ACTION_DIR / "06copyenv"
+RESTORE_CONFIGURE_PATH = RESTORE_MODULE_ACTION_DIR / "20configure"
+STATE_INCLUDE_PATH = ROOT / "imageroot" / "etc" / "state-include.conf"
 UPDATE_OWNERSHIP_SCRIPT_PATH = UPDATE_MODULE_SCRIPT_DIR / "30ensure-agent-home-ownership"
 UPDATE_RESTART_SCRIPT_PATH = UPDATE_MODULE_SCRIPT_DIR / "80restart"
 RECONCILE_DESIRED_ROUTES_PATH = CONFIGURE_MODULE_ACTION_DIR / "90reconcile-desired-routes"
@@ -1879,6 +1883,8 @@ class HermesModuleStateTest(unittest.TestCase):
         setattr(agent_stub, "set_env", mock.Mock(side_effect=set_env_side_effect))
         setattr(agent_stub, "unset_env", mock.Mock(side_effect=unset_env_side_effect))
         setattr(agent_stub, "bind_user_domains", mock.Mock(return_value=True))
+        setattr(agent_stub, "resolve_agent_id", mock.Mock(return_value=None))
+        setattr(agent_stub, "assert_exp", mock.Mock())
         setattr(agent_stub, "tasks", agent_tasks_stub)
         sys.modules["agent"] = agent_stub
         sys.modules["agent.tasks"] = agent_tasks_stub
@@ -1924,7 +1930,7 @@ class HermesModuleStateTest(unittest.TestCase):
                         "TIMEZONE": "UTC",
                         "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:test",
                     },
-                    clear=False,
+                    clear=True,
                 ), mock.patch("subprocess.run", side_effect=run_side_effect) as run_command:
                     run_action(CONFIGURE_MODULE_ACTION_DIR, request)
 
@@ -2136,7 +2142,7 @@ class HermesModuleStateTest(unittest.TestCase):
                         "TIMEZONE": "UTC",
                         "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:test",
                     },
-                    clear=False,
+                    clear=True,
                 ), mock.patch(
                     "subprocess.run",
                     side_effect=lambda command, **kwargs: emulate_sync_agent_runtime(self.sync, command)
@@ -2245,6 +2251,162 @@ class HermesModuleStateTest(unittest.TestCase):
                 sys.modules["agent.tasks"] = original_agent_tasks
             elif "agent.tasks" in sys.modules:
                 del sys.modules["agent.tasks"]
+
+    def test_restore_copyenv_restores_only_allowlisted_shared_environment(self):
+        original_agent = sys.modules.get("agent")
+        agent_stub = types.ModuleType("agent")
+        setattr(agent_stub, "set_env", mock.Mock(side_effect=set_env_side_effect))
+        setattr(agent_stub, "unset_env", mock.Mock(side_effect=unset_env_side_effect))
+        sys.modules["agent"] = agent_stub
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir), mock.patch.dict(
+                os.environ,
+                {"TIMEZONE": "UTC"},
+                clear=True,
+            ), mock.patch(
+                "sys.stdin",
+                io.StringIO(
+                    json.dumps(
+                        {
+                            "environment": {
+                                "TIMEZONE": " Europe/Rome ",
+                                "BASE_VIRTUALHOST": " Agents.Example.ORG ",
+                                "USER_DOMAIN": " Example.Org ",
+                                "LETS_ENCRYPT": "TrUe",
+                                "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:restored",
+                            }
+                        }
+                    )
+                ),
+            ):
+                runpy.run_path(str(RESTORE_COPY_ENV_PATH), run_name="__main__")
+
+                self.assertEqual(read_envfile("environment"), {
+                    "TIMEZONE": "Europe/Rome",
+                    "BASE_VIRTUALHOST": "agents.example.org",
+                    "USER_DOMAIN": "example.org",
+                    "LETS_ENCRYPT": "true",
+                })
+                self.assertNotIn(
+                    mock.call("HERMES_AGENT_HERMES_IMAGE", "quay.io/example/hermes:restored"),
+                    agent_stub.set_env.call_args_list,
+                )
+        finally:
+            if original_agent is not None:
+                sys.modules["agent"] = original_agent
+            else:
+                del sys.modules["agent"]
+
+    def test_restore_copyenv_rejects_missing_environment(self):
+        original_agent = sys.modules.get("agent")
+        agent_stub = types.ModuleType("agent")
+        setattr(agent_stub, "set_env", mock.Mock(side_effect=set_env_side_effect))
+        setattr(agent_stub, "unset_env", mock.Mock(side_effect=unset_env_side_effect))
+        sys.modules["agent"] = agent_stub
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir), mock.patch(
+                "sys.stdin", io.StringIO("{}")
+            ), self.assertRaisesRegex(ValueError, "restore environment"):
+                runpy.run_path(str(RESTORE_COPY_ENV_PATH), run_name="__main__")
+        finally:
+            if original_agent is not None:
+                sys.modules["agent"] = original_agent
+            else:
+                del sys.modules["agent"]
+
+    def test_restore_module_replays_configure_module_from_restored_state(self):
+        original_agent = sys.modules.get("agent")
+        original_agent_tasks = sys.modules.get("agent.tasks")
+        agent_tasks_stub = types.ModuleType("agent.tasks")
+        setattr(agent_tasks_stub, "run", mock.Mock(return_value={"exit_code": 0}))
+
+        agent_stub = types.ModuleType("agent")
+        setattr(agent_stub, "set_env", mock.Mock(side_effect=set_env_side_effect))
+        setattr(agent_stub, "unset_env", mock.Mock(side_effect=unset_env_side_effect))
+        setattr(agent_stub, "assert_exp", mock.Mock())
+        setattr(agent_stub, "tasks", agent_tasks_stub)
+        sys.modules["agent"] = agent_stub
+        sys.modules["agent.tasks"] = agent_tasks_stub
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, working_directory(temp_dir), mock.patch.dict(
+                os.environ,
+                {"AGENT_ID": "module/hermes-agent15", "TIMEZONE": "UTC"},
+                clear=False,
+            ):
+                self.state.write_jsonfile(
+                    Path("agents") / "1" / "metadata.json",
+                    {
+                        "id": 1,
+                        "name": "Restored Agent",
+                        "role": "developer",
+                        "status": "start",
+                        "allowed_user": "alice",
+                    },
+                )
+                request = json.dumps(
+                    {
+                        "environment": {
+                            "TIMEZONE": " Europe/Rome ",
+                            "BASE_VIRTUALHOST": " Agents.Example.ORG ",
+                            "USER_DOMAIN": " Example.Org ",
+                            "LETS_ENCRYPT": "true",
+                            "HERMES_AGENT_HERMES_IMAGE": "quay.io/example/hermes:restored",
+                        }
+                    }
+                )
+
+                run_action(RESTORE_MODULE_ACTION_DIR, request)
+
+                self.assertEqual(read_envfile("environment"), {
+                    "TIMEZONE": "Europe/Rome",
+                    "BASE_VIRTUALHOST": "agents.example.org",
+                    "USER_DOMAIN": "example.org",
+                    "LETS_ENCRYPT": "true",
+                })
+                agent_tasks_stub.run.assert_called_once_with(
+                    agent_id="module/hermes-agent15",
+                    action="configure-module",
+                    data={
+                        "base_virtualhost": "agents.example.org",
+                        "user_domain": "example.org",
+                        "lets_encrypt": True,
+                        "agents": [
+                            {
+                                "id": 1,
+                                "name": "Restored Agent",
+                                "role": "developer",
+                                "status": "start",
+                                "allowed_user": "alice",
+                            }
+                        ],
+                    },
+                )
+                agent_stub.assert_exp.assert_called_once_with(True, "The configure-module subtask failed!")
+        finally:
+            if original_agent is not None:
+                sys.modules["agent"] = original_agent
+            else:
+                del sys.modules["agent"]
+
+            if original_agent_tasks is not None:
+                sys.modules["agent.tasks"] = original_agent_tasks
+            elif "agent.tasks" in sys.modules:
+                del sys.modules["agent.tasks"]
+
+    def test_state_include_contains_only_canonical_restore_inputs(self):
+        state_include = STATE_INCLUDE_PATH.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(
+            state_include,
+            [
+                "state/agents",
+                "state/secrets",
+                "volumes/hermes-agents-home",
+            ],
+        )
 
     def test_destroy_module_removes_routes_and_runtime_for_known_agent_state(self):
         original_agent = sys.modules.get("agent")
