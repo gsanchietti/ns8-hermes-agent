@@ -100,9 +100,9 @@ state/secrets
 volumes/hermes-agents-home
 ```
 
-NS8 core uses this file to include the agent metadata, the secrets directory, and the shared home volume in restic snapshots.
+NS8 core uses this file to include the agent metadata, the secrets directory, and the shared home volume in restic snapshots. Derived auth proxy files are intentionally excluded because they can be regenerated from the restored shared environment, agent metadata, and secrets.
 
-After a restore, `restore-module/20configure` calls `sync-agent-runtime` to regenerate the derived runtime files (`agent_<id>.env`, `authproxy.*`) from the restored `agents/` and `secrets/` state, so the module can start cleanly without a manual `configure-module` call.
+After a restore, `restore-module/06copyenv` restores only Hermes-managed shared keys from `request['environment']` (`TIMEZONE`, `BASE_VIRTUALHOST`, `USER_DOMAIN`, `LETS_ENCRYPT`). Then `restore-module/20configure` reads the restored `agents/` tree and reruns `configure-module` so the module rebinds the user domain, regenerates derived runtime files (`agents/<id>/agent.env`, `authproxy.*`), reconciles routes, and recreates the expected services without a manual reconfigure.
 
 ## Generated state
 
